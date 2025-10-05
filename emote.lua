@@ -188,5 +188,5 @@ emoteBtn.MouseButton1Click:Connect(function()
 end)
 
 local msg = Instance.new("Message", workspace)
-msg.Text = "script made by oneshotmix !! ^^ \nalso its wip, so there might be bugs or the emotes are too little..\nenjoy!\nPC UPDATE!!"
+msg.Text = "script made by oneshotmix !! ^^ \nalso its wip, so there might be bugs or the emotes are too little..\nenjoy!"
 task.delay(1.95, function() msg:Destroy() end)
