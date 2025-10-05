@@ -128,58 +128,44 @@ local function playEmote(name, data)
 end
 
 for emoteName, data in pairs(EMOTES) do
-	local button = emoteFolder:FindFirstChild(emoteName)
-	if not button then
-		local dance = emoteFolder:FindFirstChild("Dance")
-		if dance then
-			button = dance:Clone()
-			button.Name = emoteName
-			button.Parent = emoteFolder
-		else
-			button = Instance.new("ImageButton")
-			button.Name = emoteName
-			button.Size = UDim2.new(0,64,0,64)
-			button.Parent = emoteFolder
-		end
-	end
-	button.MouseButton1Click:Connect(function()
-		if tick() - lastClick < 0.2 then return end
-		lastClick = tick()
-		gui.Visible = false
-		overrideActive = true
-		startBlockingGui()
-		if activeEmote == emoteName then
-			stopEmote()
-		else
-			playEmote(emoteName, data)
-		end
-	end)
+ local button = emoteFolder:FindFirstChild(emoteName)
+ if not button then
+  local dance = emoteFolder:FindFirstChild("Dance")
+  if dance then
+   button = dance:Clone()
+   button.Name = emoteName
+   button.Parent = emoteFolder
+  else
+   button = Instance.new("ImageButton")
+   button.Name = emoteName
+   button.Size = UDim2.new(0,64,0,64)
+   button.Parent = emoteFolder
+  end
+ end
+ button.MouseButton1Click:Connect(function()
+  if tick() - lastClick < 0.2 then return end
+  lastClick = tick()
+  gui.Visible = false
+  overrideActive = true
+  startBlockingGui()
+  if activeEmote == emoteName then
+   stopEmote()
+  else
+   playEmote(emoteName, data)
+  end
+ end)
 end
 
--- for pc support lmk if it works
-local UserInputService = game:GetService("UserInputService")
-UserInputService.InputBegan:Connect(function(input, gp)
-	if gp then return end
-	if input.KeyCode == Enum.KeyCode.G then
-		if activeEmote then
-			stopEmote()
-			overrideActive = false
-			stopBlockingGui()
-			gui.Visible = true
-		end
-	end
-end)
-
 emoteBtn.MouseButton1Click:Connect(function()
-	if tick() - lastClick < 0.2 then return end
-	lastClick = tick()
-	if not overrideActive then return end
-	if activeEmote then
-		stopEmote()
-	else
-		overrideActive = false
-		stopBlockingGui()
-	end
+ if tick() - lastClick < 0.2 then return end
+ lastClick = tick()
+ if not overrideActive then return end
+ if activeEmote then
+  stopEmote()
+ else
+  overrideActive = false
+  stopBlockingGui()
+ end
 end)
 
 local msg = Instance.new("Message", workspace)
