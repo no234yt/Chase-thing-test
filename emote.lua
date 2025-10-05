@@ -156,6 +156,20 @@ for emoteName, data in pairs(EMOTES) do
 	end)
 end
 
+-- for pc support lmk if it works
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.KeyCode == Enum.KeyCode.G then
+		if activeEmote then
+			stopEmote()
+			overrideActive = false
+			stopBlockingGui()
+			gui.Visible = true
+		end
+	end
+end)
+
 emoteBtn.MouseButton1Click:Connect(function()
 	if tick() - lastClick < 0.2 then return end
 	lastClick = tick()
