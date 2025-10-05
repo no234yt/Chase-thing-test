@@ -24,7 +24,6 @@ local EMOTES = {
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local HttpService = game:GetService("HttpService")
 local player = Players.LocalPlayer
 local playerGui = player:WaitForChild("PlayerGui")
 local mainGui = playerGui:WaitForChild("MainGui")
@@ -87,6 +86,7 @@ local function stopEmote()
 	if humanoid and originalWalkSpeed then pcall(function() humanoid.WalkSpeed = originalWalkSpeed end) end
 	originalWalkSpeed = nil
 	activeEmote = nil
+	print("[Emote] stopped")
 end
 
 local function playEmote(name, data)
@@ -125,49 +125,68 @@ local function playEmote(name, data)
 			pcall(function() humanoid.WalkSpeed = 0 end)
 		end
 	end)
+	print("[Emote] playing:", name)
 end
 
 for emoteName, data in pairs(EMOTES) do
- local button = emoteFolder:FindFirstChild(emoteName)
- if not button then
-  local dance = emoteFolder:FindFirstChild("Dance")
-  if dance then
-   button = dance:Clone()
-   button.Name = emoteName
-   button.Parent = emoteFolder
-  else
-   button = Instance.new("ImageButton")
-   button.Name = emoteName
-   button.Size = UDim2.new(0,64,0,64)
-   button.Parent = emoteFolder
-  end
- end
- button.MouseButton1Click:Connect(function()
-  if tick() - lastClick < 0.2 then return end
-  lastClick = tick()
-  gui.Visible = false
-  overrideActive = true
-  startBlockingGui()
-  if activeEmote == emoteName then
-   stopEmote()
-  else
-   playEmote(emoteName, data)
-  end
- end)
+	local button = emoteFolder:FindFirstChild(emoteName)
+	if not button then
+		local dance = emoteFolder:FindFirstChild("Dance")
+		if dance then
+			button = dance:Clone()
+			button.Name = emoteName
+			button.Parent = emoteFolder
+		else
+			button = Instance.new("ImageButton")
+			button.Name = emoteName
+			button.Size = UDim2.new(0,64,0,64)
+			button.Parent = emoteFolder
+		end
+	end
+	button.MouseButton1Click:Connect(function()
+		if tick() - lastClick < 0.2 then return end
+		lastClick = tick()
+		gui.Visible = false
+		overrideActive = true
+		startBlockingGui()
+		if activeEmote == emoteName then
+			stopEmote()
+		else
+			playEmote(emoteName, data)
+		end
+	end)
 end
 
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, gp)
+	if gp then return end
+	if input.UserInputType == Enum.UserInputType.Keyboard and input.KeyCode == Enum.KeyCode.G then
+		if not overrideActive then
+			return
+		end
+		if activeEmote then
+			stopEmote()
+			print("[PC] G: stopped emote, override remains")
+		else
+			overrideActive = false
+			stopBlockingGui()
+			print("[PC] G: override released (game can open GUI now)")
+		end
+	end
+end)
+
 emoteBtn.MouseButton1Click:Connect(function()
- if tick() - lastClick < 0.2 then return end
- lastClick = tick()
- if not overrideActive then return end
- if activeEmote then
-  stopEmote()
- else
-  overrideActive = false
-  stopBlockingGui()
- end
+	if tick() - lastClick < 0.2 then return end
+	lastClick = tick()
+	if not overrideActive then return end
+	if activeEmote then
+		stopEmote()
+	else
+		overrideActive = false
+		stopBlockingGui()
+	end
 end)
 
 local msg = Instance.new("Message", workspace)
-msg.Text = "script made by oneshotmix !! ^^ \nalso its wip, so there might be bugs or the emotes are too little..\nenjoy!"
+msg.Text = "script made by oneshotmix !! ^^ \nalso its wip, so there might be bugs or the emotes are too little..\nenjoy!\nPC UPDATE!!"
 task.delay(1.95, function() msg:Destroy() end)
