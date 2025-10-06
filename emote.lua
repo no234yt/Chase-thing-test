@@ -19,22 +19,6 @@ local EMOTES = {
 		FileName = nil,
 		Traversal = false,
 		UseRobloxAsset = true
-	},
-	["SpookyDance"] = {
-		Animation = "rbxassetid://89964848616797",
-		SongURL = "https://raw.githubusercontent.com/no234yt/Chase-thing-test/797284d0b949338ec747d9e6b4010fcdc94cb966/spooky-month-the-stars-ost-scary-swings-made-with-Voicemod.mp3",
-		FileName = "SpookyDance.ogg",
-		Traversal = false,
-		UseRobloxAsset = false,
-		AnimationSpeed = 0.5
-	},
-	["GetGriddy"] = {
-		Animation = "rbxassetid://106944726972070",
-		SongURL = nil,
-		FileName = nil,
-		Traversal = true,
-		UseRobloxAsset = false,
-		FixedWalkSpeed = 7
 	}
 }
 
