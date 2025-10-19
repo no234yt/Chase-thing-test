@@ -30,124 +30,148 @@ local defaultWalkSpeed, defaultJumpPower, defaultHipHeight, defaultFov = 16, 50,
 local spinSound, jumpSound
 local rollBtnConnection
 
+-- Utilities
 local function lerp(a,b,t) return a + (b-a)*t end
-local function tweenFov(toFov,time) TweenService:Create(cam,TweenInfo.new(time,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{FieldOfView=toFov}):Play() end
-local function getMoveDirection() local camLook=cam.CFrame.LookVector return Vector3.new(camLook.X,0,camLook.Z).Unit end
+local function tweenFov(toFov,time)
+	TweenService:Create(cam,TweenInfo.new(time,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{FieldOfView=toFov}):Play()
+end
+local function getMoveDirection()
+	local look = cam.CFrame.LookVector
+	local dir = Vector3.new(look.X,0,look.Z)
+	if dir.Magnitude == 0 then return Vector3.new(0,0,1) end
+	return dir.Unit
+end
 
+-- Roll control
 local function stopRoll()
-	isCharging=false
-	isRolling=false
-	speed=0
-	targetSpeed=0
+	isCharging = false
+	isRolling = false
+	speed = 0
+	targetSpeed = 0
 	if animTrack then animTrack:Stop() end
 	if humanoid then
-		humanoid.WalkSpeed=defaultWalkSpeed
-		humanoid.JumpPower=defaultJumpPower
-		humanoid.HipHeight=defaultHipHeight
-		humanoid.AutoRotate=true
+		humanoid.WalkSpeed = defaultWalkSpeed
+		humanoid.JumpPower = defaultJumpPower
+		humanoid.HipHeight = defaultHipHeight
+		humanoid.AutoRotate = true
 	end
 	tweenFov(defaultFov,0.3)
 end
 
 local function releaseRoll()
 	if not isCharging then return end
-	isCharging=false
-	isRolling=true
-	speed=BOOST_POWER
-	targetSpeed=BOOST_POWER
-	tweenFov(defaultFov+FOV_BOOST,0.3)
+	isCharging = false
+	isRolling = true
+	speed = BOOST_POWER
+	targetSpeed = BOOST_POWER
+	tweenFov(defaultFov + FOV_BOOST,0.3)
 	if spinSound then spinSound:Play() end
 	if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
 end
 
 local function startCharge()
 	if isCharging or isRolling or not humanoid then return end
-	isCharging=true
-	humanoid.WalkSpeed=0
-	humanoid.JumpPower=0
-	humanoid.AutoRotate=false
-	humanoid.HipHeight=-1
+	isCharging = true
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	humanoid.AutoRotate = false
+	humanoid.HipHeight = -1
 	animTrack:Play()
 	animTrack:AdjustSpeed(1)
-	tweenFov(defaultFov+FOV_CHARGE,0.25)
-	local startTime=tick()
-	while isCharging and tick()-startTime<CHARGE_TIME do
+	tweenFov(defaultFov + FOV_CHARGE,0.25)
+	local startTime = tick()
+	while isCharging and tick() - startTime < CHARGE_TIME do
 		if animTrack then animTrack:AdjustSpeed(lerp(animTrack.Speed,3,0.1)) end
-		task.wait(0.05)
+		task.wait(0.03) -- slightly faster loop
 	end
 	if isCharging then releaseRoll() end
 end
 
+-- Sounds
 local function setupSounds()
 	if not isfile("spindash.mp3") then writefile("spindash.mp3",game:HttpGet(SPINDASH_SOUND)) end
 	if not isfile("jump.mp3") then writefile("jump.mp3",game:HttpGet(JUMP_SOUND)) end
 	if hrp then
-		spinSound=hrp:FindFirstChild("SpindashSound") or Instance.new("Sound")
-		spinSound.Name="SpindashSound"
-		spinSound.SoundId=getcustomasset("spindash.mp3")
-		spinSound.Volume=1
-		spinSound.Parent=hrp
-		jumpSound=hrp:FindFirstChild("JumpSound") or Instance.new("Sound")
-		jumpSound.Name="JumpSound"
-		jumpSound.SoundId=getcustomasset("jump.mp3")
-		jumpSound.Volume=0.9
-		jumpSound.Parent=hrp
+		spinSound = hrp:FindFirstChild("SpindashSound") or Instance.new("Sound")
+		spinSound.Name = "SpindashSound"
+		spinSound.SoundId = getcustomasset("spindash.mp3")
+		spinSound.Volume = 1
+		spinSound.Parent = hrp
+
+		jumpSound = hrp:FindFirstChild("JumpSound") or Instance.new("Sound")
+		jumpSound.Name = "JumpSound"
+		jumpSound.SoundId = getcustomasset("jump.mp3")
+		jumpSound.Volume = 0.9
+		jumpSound.Parent = hrp
 	end
 end
 
+-- Character setup
 local function setupCharacter()
-	character=player.Character or player.CharacterAdded:Wait()
-	humanoid=character:WaitForChild("Humanoid")
-	hrp=character:WaitForChild("HumanoidRootPart")
-	local anim=Instance.new("Animation")
-	anim.AnimationId=ANIM_ID
-	animTrack=humanoid:LoadAnimation(anim)
-	animTrack.Looped=true
+	character = player.Character or player.CharacterAdded:Wait()
+	humanoid = character:WaitForChild("Humanoid")
+	hrp = character:WaitForChild("HumanoidRootPart")
+
+	local anim = Instance.new("Animation")
+	anim.AnimationId = ANIM_ID
+	animTrack = humanoid:LoadAnimation(anim)
+	animTrack.Looped = true
+
 	setupSounds()
-	defaultWalkSpeed=humanoid.WalkSpeed
-	defaultJumpPower=humanoid.JumpPower
-	defaultHipHeight=0
-	defaultFov=cam.FieldOfView
+	defaultWalkSpeed = humanoid.WalkSpeed
+	defaultJumpPower = humanoid.JumpPower
+	defaultHipHeight = 0
+	defaultFov = cam.FieldOfView
+
 	humanoid.Jumping:Connect(function()
 		if isRolling then
-			targetSpeed=math.clamp(targetSpeed+JUMP_BOOST,0,MAX_SPEED)
+			targetSpeed = math.clamp(targetSpeed + JUMP_BOOST,0,MAX_SPEED)
 			if jumpSound then jumpSound:Play() end
 		end
 	end)
+
 	stopRoll()
 end
 
+-- Heartbeat update
 RunService.Heartbeat:Connect(function(dt)
 	if not humanoid or not hrp then return end
-	if isCharging then
-		local camLook=cam.CFrame.LookVector
-		local facing=Vector3.new(camLook.X,0,camLook.Z).Unit
-		hrp.CFrame=CFrame.lookAt(hrp.Position,hrp.Position+facing)
-	elseif isRolling then
-		local camLook=cam.CFrame.LookVector
-		local facing=Vector3.new(camLook.X,0,camLook.Z).Unit
-		hrp.CFrame=CFrame.lookAt(hrp.Position,hrp.Position+facing)
-		speed=lerp(speed,targetSpeed,dt*BOOST_ACCEL)
-		local moveDir=getMoveDirection()
-		local newVel=moveDir*speed
-		hrp.AssemblyLinearVelocity=Vector3.new(newVel.X,hrp.AssemblyLinearVelocity.Y,newVel.Z)
+
+	local moveDir = getMoveDirection()
+	if isCharging or isRolling then
+		-- Keep facing camera direction
+		local camLook = Vector3.new(cam.CFrame.LookVector.X,0,cam.CFrame.LookVector.Z)
+		if camLook.Magnitude > 0 then
+			hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + camLook.Unit)
+		end
+	end
+
+	if isRolling then
+		-- Smooth speed interpolation
+		speed = lerp(speed, targetSpeed, math.clamp(dt*BOOST_ACCEL,0,1))
+		-- Apply velocity relative to humanoid mass
+		local mass = hrp.AssemblyMass
+		local newVel = moveDir * speed
+		hrp.AssemblyLinearVelocity = Vector3.new(newVel.X, hrp.AssemblyLinearVelocity.Y, newVel.Z)
+
 		if animTrack then animTrack:AdjustSpeed(math.clamp(speed/20,1,3)) end
-		humanoid.HipHeight=-1
-		targetSpeed=math.clamp(targetSpeed*BOOST_DECAY,MIN_SPEED,MAX_SPEED)
+		humanoid.HipHeight = -1
+		targetSpeed = math.clamp(targetSpeed * BOOST_DECAY, MIN_SPEED, MAX_SPEED)
 	end
 end)
 
+-- Mobile button
 local function setupRollButton()
-	local mainGui=player:WaitForChild("PlayerGui"):WaitForChild("MainGui")
-	local mobileGui=mainGui:WaitForChild("Mobile")
-	local jumpBtn=mobileGui:WaitForChild("JumpBtn")
-	local rollBtn=mobileGui:FindFirstChild("RollBtn") or jumpBtn:Clone()
-	rollBtn.Name="RollBtn"
-	rollBtn.Position=UDim2.new(0.8175,0,0.75,0)
-	rollBtn.Icon.Image="rbxassetid://130774527672418"
-	rollBtn.Parent=mobileGui
+	local mainGui = player:WaitForChild("PlayerGui"):WaitForChild("MainGui")
+	local mobileGui = mainGui:WaitForChild("Mobile")
+	local jumpBtn = mobileGui:WaitForChild("JumpBtn")
+	local rollBtn = mobileGui:FindFirstChild("RollBtn") or jumpBtn:Clone()
+	rollBtn.Name = "RollBtn"
+	rollBtn.Position = UDim2.new(0.8175,0,0.75,0)
+	rollBtn.Icon.Image = "rbxassetid://130774527672418"
+	rollBtn.Parent = mobileGui
 	if rollBtnConnection then rollBtnConnection:Disconnect() end
-	rollBtnConnection=rollBtn.MouseButton1Click:Connect(function()
+	rollBtnConnection = rollBtn.MouseButton1Click:Connect(function()
 		if not isRolling and not isCharging then
 			startCharge()
 		else
@@ -156,9 +180,10 @@ local function setupRollButton()
 	end)
 end
 
+-- Key input
 UserInputService.InputBegan:Connect(function(input,processed)
 	if processed then return end
-	if input.KeyCode==KEYBIND then
+	if input.KeyCode == KEYBIND then
 		if not isRolling and not isCharging then
 			startCharge()
 		else
@@ -167,6 +192,7 @@ UserInputService.InputBegan:Connect(function(input,processed)
 	end
 end)
 
+-- Character added
 player.CharacterAdded:Connect(function()
 	task.wait(0.5)
 	setupCharacter()
@@ -174,5 +200,6 @@ player.CharacterAdded:Connect(function()
 	stopRoll()
 end)
 
+-- Init
 setupCharacter()
 if UserInputService.TouchEnabled then setupRollButton() end
