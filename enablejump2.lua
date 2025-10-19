@@ -89,7 +89,7 @@ local function requestJump()
 end
 
 local function bindButton(btn)
-	if not btn or btn == currentBtn then return end
+	if not btn or btn.Name ~= "JumpBtn" or btn == currentBtn then return end
 	disconnectAll()
 	currentBtn = btn
 
