@@ -28,6 +28,7 @@ local speed = 0
 local targetSpeed = 0
 local defaultWalkSpeed, defaultJumpPower, defaultHipHeight, defaultFov = 16, 50, 0, cam.FieldOfView
 local spinSound, jumpSound
+local rollBtnConnection
 
 local function lerp(a,b,t) return a + (b-a)*t end
 local function tweenFov(toFov,time) TweenService:Create(cam,TweenInfo.new(time,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{FieldOfView=toFov}):Play() end
@@ -71,7 +72,7 @@ local function startCharge()
 	tweenFov(defaultFov+FOV_CHARGE,0.25)
 	local startTime=tick()
 	while isCharging and tick()-startTime<CHARGE_TIME do
-		animTrack:AdjustSpeed(lerp(animTrack.Speed,3,0.1))
+		if animTrack then animTrack:AdjustSpeed(lerp(animTrack.Speed,3,0.1)) end
 		task.wait(0.05)
 	end
 	if isCharging then releaseRoll() end
@@ -80,16 +81,18 @@ end
 local function setupSounds()
 	if not isfile("spindash.mp3") then writefile("spindash.mp3",game:HttpGet(SPINDASH_SOUND)) end
 	if not isfile("jump.mp3") then writefile("jump.mp3",game:HttpGet(JUMP_SOUND)) end
-	spinSound=hrp:FindFirstChild("SpindashSound") or Instance.new("Sound")
-	spinSound.Name="SpindashSound"
-	spinSound.SoundId=getcustomasset("spindash.mp3")
-	spinSound.Volume=1
-	spinSound.Parent=hrp
-	jumpSound=hrp:FindFirstChild("JumpSound") or Instance.new("Sound")
-	jumpSound.Name="JumpSound"
-	jumpSound.SoundId=getcustomasset("jump.mp3")
-	jumpSound.Volume=0.9
-	jumpSound.Parent=hrp
+	if hrp then
+		spinSound=hrp:FindFirstChild("SpindashSound") or Instance.new("Sound")
+		spinSound.Name="SpindashSound"
+		spinSound.SoundId=getcustomasset("spindash.mp3")
+		spinSound.Volume=1
+		spinSound.Parent=hrp
+		jumpSound=hrp:FindFirstChild("JumpSound") or Instance.new("Sound")
+		jumpSound.Name="JumpSound"
+		jumpSound.SoundId=getcustomasset("jump.mp3")
+		jumpSound.Volume=0.9
+		jumpSound.Parent=hrp
+	end
 end
 
 local function setupCharacter()
@@ -128,7 +131,7 @@ RunService.Heartbeat:Connect(function(dt)
 		local moveDir=getMoveDirection()
 		local newVel=moveDir*speed
 		hrp.AssemblyLinearVelocity=Vector3.new(newVel.X,hrp.AssemblyLinearVelocity.Y,newVel.Z)
-		animTrack:AdjustSpeed(math.clamp(speed/20,1,3))
+		if animTrack then animTrack:AdjustSpeed(math.clamp(speed/20,1,3)) end
 		humanoid.HipHeight=-1
 		targetSpeed=math.clamp(targetSpeed*BOOST_DECAY,MIN_SPEED,MAX_SPEED)
 	end
@@ -143,7 +146,8 @@ local function setupRollButton()
 	rollBtn.Position=UDim2.new(0.8175,0,0.75,0)
 	rollBtn.Icon.Image="rbxassetid://130774527672418"
 	rollBtn.Parent=mobileGui
-	rollBtn.MouseButton1Click:Connect(function()
+	if rollBtnConnection then rollBtnConnection:Disconnect() end
+	rollBtnConnection=rollBtn.MouseButton1Click:Connect(function()
 		if not isRolling and not isCharging then
 			startCharge()
 		else
