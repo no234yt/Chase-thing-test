@@ -22,7 +22,7 @@ local COOLDOWN_TIME = 1.5
 local SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3"
 local JUMP_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3"
 local ICON_URL = "https://raw.githubusercontent.com/no234yt/Chase-thing-test/c49e870a8db6d450d0af4c5f51c2ad6401a8be6c/Tak%20berjudul50_20251021221343.png"
-local ICON_FILE = "metal_spindash_icon.png"
+local ICON_FILE = "spindash_icon.png"
 local BUTTON_NAME = "Roll"
 
 local character, humanoid, hrp, animTrack, spinSound, jumpSound, highlight
