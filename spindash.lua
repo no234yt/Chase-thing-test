@@ -6,107 +6,225 @@ local UserInputService = game:GetService("UserInputService")
 local player = Players.LocalPlayer
 local cam = workspace.CurrentCamera
 
+--// SETTINGS
 local ANIM_ID = "rbxassetid://18752189666"
-local CHARGE_TIME = 1.25
-local BOOST_ACCEL = 6
-local BOOST_DECAY = 0.985
-local BOOST_POWER = 75
-local JUMP_BOOST = 35
-local MAX_SPEED = 175
-local MIN_SPEED = 60
-local FOV_CHARGE = 10
-local FOV_BOOST = 5
 local KEYBIND = Enum.KeyCode.V
-local SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3"
-local JUMP_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3"
 
+local MAX_CHARGE_TIME = 2           -- max time you can hold
+local MIN_BOOST_POWER = 60
+local MAX_BOOST_POWER = 200
+
+local MIN_DURATION = 0.8
+local MAX_DURATION = 3
+
+local COOLDOWN = 1.5
+
+local BOOST_ACCEL = 8
+local BOOST_DECAY = 0.985
+local JUMP_BOOST = 25
+local MAX_SPEED = 250
+
+local FOV_CHARGE = 12
+local FOV_BOOST = 8
+
+--// VARIABLES
 local character, humanoid, hrp
 local animTrack
+
 local isCharging = false
 local isRolling = false
+local isOnCooldown = false
+
+local chargeStart = 0
+local currentCharge = 0
+local rollEndTime = 0
+
 local speed = 0
 local targetSpeed = 0
-local defaultWalkSpeed, defaultJumpPower, defaultHipHeight, defaultFov = 16, 50, 0, cam.FieldOfView
-local spinSound, jumpSound
-local rollBtnConnection
 
--- Utilities
-local function lerp(a,b,t) return a + (b-a)*t end
-local function tweenFov(toFov,time)
-	TweenService:Create(cam,TweenInfo.new(time,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{FieldOfView=toFov}):Play()
+local defaultWalkSpeed
+local defaultJumpPower
+local defaultFov
+
+--// GUI CREATION
+local function createChargeGui()
+	local gui = Instance.new("ScreenGui")
+	gui.Name = "SpindashGui"
+	gui.ResetOnSpawn = false
+	gui.Parent = player:WaitForChild("PlayerGui")
+
+	local frame = Instance.new("Frame")
+	frame.Size = UDim2.new(0,200,0,20)
+	frame.Position = UDim2.new(0.5,-100,0.82,0)
+	frame.BackgroundColor3 = Color3.new(0,0,0)
+	frame.BorderSizePixel = 2
+	frame.Visible = false
+	frame.Parent = gui
+
+	local bar = Instance.new("Frame")
+	bar.Size = UDim2.new(0,0,1,0)
+	bar.BackgroundColor3 = Color3.new(1,1,1)
+	bar.BorderSizePixel = 0
+	bar.Parent = frame
+
+	local text = Instance.new("TextLabel")
+	text.Size = UDim2.new(1,0,1,0)
+	text.BackgroundTransparency = 1
+	text.Text = "SPINDASH"
+	text.TextColor3 = Color3.new(1,1,1)
+	text.TextStrokeTransparency = 0
+	text.Font = Enum.Font.Arcade
+	text.TextScaled = true
+	text.Parent = frame
+
+	return frame, bar
 end
+
+local chargeFrame, chargeBar = createChargeGui()
+
+--// Utility
+local function lerp(a,b,t)
+	return a + (b-a)*t
+end
+
 local function getMoveDirection()
 	local look = cam.CFrame.LookVector
-	local dir = Vector3.new(look.X,0,look.Z)
-	if dir.Magnitude == 0 then return Vector3.new(0,0,1) end
-	return dir.Unit
+	return Vector3.new(look.X,0,look.Z).Unit
 end
 
--- Roll control
+local function tweenFov(fov,time)
+	TweenService:Create(cam,TweenInfo.new(time,Enum.EasingStyle.Quad,Enum.EasingDirection.Out),{FieldOfView=fov}):Play()
+end
+
+--// STOP
 local function stopRoll()
-	isCharging = false
 	isRolling = false
 	speed = 0
 	targetSpeed = 0
-	if animTrack then animTrack:Stop() end
+
 	if humanoid then
 		humanoid.WalkSpeed = defaultWalkSpeed
 		humanoid.JumpPower = defaultJumpPower
-		humanoid.HipHeight = defaultHipHeight
 		humanoid.AutoRotate = true
 	end
+
+	if animTrack then animTrack:Stop() end
+
 	tweenFov(defaultFov,0.3)
+
+	-- cooldown
+	isOnCooldown = true
+	task.delay(COOLDOWN,function()
+		isOnCooldown = false
+	end)
 end
 
+--// RELEASE
 local function releaseRoll()
-	if not isCharging then return end
 	isCharging = false
 	isRolling = true
-	speed = BOOST_POWER
-	targetSpeed = BOOST_POWER
-	tweenFov(defaultFov + FOV_BOOST,0.3)
-	if spinSound then spinSound:Play() end
-	if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Jumping) end
+
+	chargeFrame.Visible = false
+
+	local chargePercent = math.clamp(currentCharge / MAX_CHARGE_TIME,0,1)
+
+	targetSpeed = lerp(MIN_BOOST_POWER,MAX_BOOST_POWER,chargePercent)
+	speed = targetSpeed
+
+	local duration = lerp(MIN_DURATION,MAX_DURATION,chargePercent)
+	rollEndTime = tick() + duration
+
+	if humanoid then
+		humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	end
+
+	tweenFov(defaultFov + FOV_BOOST,0.25)
 end
 
+--// START CHARGE
 local function startCharge()
-	if isCharging or isRolling or not humanoid then return end
+	if isRolling or isCharging or isOnCooldown then return end
+
 	isCharging = true
-	humanoid.WalkSpeed = 0
-	humanoid.JumpPower = 0
-	humanoid.AutoRotate = false
-	humanoid.HipHeight = -1
+	chargeStart = tick()
+	currentCharge = 0
+
+	if humanoid then
+		humanoid.WalkSpeed = 0
+		humanoid.JumpPower = 0
+		humanoid.AutoRotate = false
+	end
+
 	animTrack:Play()
-	animTrack:AdjustSpeed(1)
-	tweenFov(defaultFov + FOV_CHARGE,0.25)
-	local startTime = tick()
-	while isCharging and tick() - startTime < CHARGE_TIME do
-		if animTrack then animTrack:AdjustSpeed(lerp(animTrack.Speed,3,0.1)) end
-		task.wait(0.03) -- slightly faster loop
-	end
-	if isCharging then releaseRoll() end
+	chargeFrame.Visible = true
+
+	tweenFov(defaultFov + FOV_CHARGE,0.2)
 end
 
--- Sounds
-local function setupSounds()
-	if not isfile("spindash.mp3") then writefile("spindash.mp3",game:HttpGet(SPINDASH_SOUND)) end
-	if not isfile("jump.mp3") then writefile("jump.mp3",game:HttpGet(JUMP_SOUND)) end
-	if hrp then
-		spinSound = hrp:FindFirstChild("SpindashSound") or Instance.new("Sound")
-		spinSound.Name = "SpindashSound"
-		spinSound.SoundId = getcustomasset("spindash.mp3")
-		spinSound.Volume = 1
-		spinSound.Parent = hrp
+--// UPDATE LOOP
+RunService.Heartbeat:Connect(function(dt)
+	if not humanoid or not hrp then return end
 
-		jumpSound = hrp:FindFirstChild("JumpSound") or Instance.new("Sound")
-		jumpSound.Name = "JumpSound"
-		jumpSound.SoundId = getcustomasset("jump.mp3")
-		jumpSound.Volume = 0.9
-		jumpSound.Parent = hrp
+	-- Charging logic
+	if isCharging then
+		currentCharge = math.clamp(tick() - chargeStart,0,MAX_CHARGE_TIME)
+
+		local percent = currentCharge / MAX_CHARGE_TIME
+		chargeBar.Size = UDim2.new(percent,0,1,0)
+
+		animTrack:AdjustSpeed(1 + percent*3)
+
+		-- Auto release at max
+		if currentCharge >= MAX_CHARGE_TIME then
+			releaseRoll()
+		end
 	end
-end
 
--- Character setup
+	-- Rolling logic
+	if isRolling then
+		if tick() >= rollEndTime then
+			stopRoll()
+			return
+		end
+
+		local dir = getMoveDirection()
+		local camLook = dir
+
+		if camLook.Magnitude > 0 then
+			hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + camLook)
+		end
+
+		speed = lerp(speed,targetSpeed,math.clamp(dt*BOOST_ACCEL,0,1))
+
+		hrp.AssemblyLinearVelocity = Vector3.new(
+			dir.X * speed,
+			hrp.AssemblyLinearVelocity.Y,
+			dir.Z * speed
+		)
+
+		targetSpeed = math.clamp(targetSpeed * BOOST_DECAY,0,MAX_SPEED)
+
+		animTrack:AdjustSpeed(math.clamp(speed/30,1,4))
+	end
+end)
+
+--// INPUT
+UserInputService.InputBegan:Connect(function(input,processed)
+	if processed then return end
+	if input.KeyCode == KEYBIND then
+		startCharge()
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if input.KeyCode == KEYBIND then
+		if isCharging then
+			releaseRoll()
+		end
+	end
+end)
+
+--// CHARACTER SETUP
 local function setupCharacter()
 	character = player.Character or player.CharacterAdded:Wait()
 	humanoid = character:WaitForChild("Humanoid")
@@ -117,89 +235,14 @@ local function setupCharacter()
 	animTrack = humanoid:LoadAnimation(anim)
 	animTrack.Looped = true
 
-	setupSounds()
 	defaultWalkSpeed = humanoid.WalkSpeed
 	defaultJumpPower = humanoid.JumpPower
-	defaultHipHeight = 0
 	defaultFov = cam.FieldOfView
-
-	humanoid.Jumping:Connect(function()
-		if isRolling then
-			targetSpeed = math.clamp(targetSpeed + JUMP_BOOST,0,MAX_SPEED)
-			if jumpSound then jumpSound:Play() end
-		end
-	end)
-
-	stopRoll()
 end
 
--- Heartbeat update
-RunService.Heartbeat:Connect(function(dt)
-	if not humanoid or not hrp then return end
-
-	local moveDir = getMoveDirection()
-	if isCharging or isRolling then
-		-- Keep facing camera direction
-		local camLook = Vector3.new(cam.CFrame.LookVector.X,0,cam.CFrame.LookVector.Z)
-		if camLook.Magnitude > 0 then
-			hrp.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + camLook.Unit)
-		end
-	end
-
-	if isRolling then
-		-- Smooth speed interpolation
-		speed = lerp(speed, targetSpeed, math.clamp(dt*BOOST_ACCEL,0,1))
-		-- Apply velocity relative to humanoid mass
-		local mass = hrp.AssemblyMass
-		local newVel = moveDir * speed
-		hrp.AssemblyLinearVelocity = Vector3.new(newVel.X, hrp.AssemblyLinearVelocity.Y, newVel.Z)
-
-		if animTrack then animTrack:AdjustSpeed(math.clamp(speed/20,1,3)) end
-		humanoid.HipHeight = -1
-		targetSpeed = math.clamp(targetSpeed * BOOST_DECAY, MIN_SPEED, MAX_SPEED)
-	end
-end)
-
--- Mobile button
-local function setupRollButton()
-	local mainGui = player:WaitForChild("PlayerGui"):WaitForChild("MainGui")
-	local mobileGui = mainGui:WaitForChild("Mobile")
-	local jumpBtn = mobileGui:WaitForChild("JumpBtn")
-	local rollBtn = mobileGui:FindFirstChild("RollBtn") or jumpBtn:Clone()
-	rollBtn.Name = "RollBtn"
-	rollBtn.Position = UDim2.new(0.8175,0,0.75,0)
-	rollBtn.Icon.Image = "rbxassetid://130774527672418"
-	rollBtn.Parent = mobileGui
-	if rollBtnConnection then rollBtnConnection:Disconnect() end
-	rollBtnConnection = rollBtn.MouseButton1Click:Connect(function()
-		if not isRolling and not isCharging then
-			startCharge()
-		else
-			stopRoll()
-		end
-	end)
-end
-
--- Key input
-UserInputService.InputBegan:Connect(function(input,processed)
-	if processed then return end
-	if input.KeyCode == KEYBIND then
-		if not isRolling and not isCharging then
-			startCharge()
-		else
-			stopRoll()
-		end
-	end
-end)
-
--- Character added
 player.CharacterAdded:Connect(function()
-	task.wait(0.5)
+	task.wait(0.3)
 	setupCharacter()
-	if UserInputService.TouchEnabled then setupRollButton() end
-	stopRoll()
 end)
 
--- Init
 setupCharacter()
-if UserInputService.TouchEnabled then setupRollButton() end
