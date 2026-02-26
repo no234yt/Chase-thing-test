@@ -12,22 +12,22 @@ local CONFIG = {
 	
 	-- Charge settings
 	MAX_CHARGE_TIME = 2.5,
-	MIN_CHARGE_TIME = 1,
+	MIN_CHARGE_TIME = 1.2, -- Increased for balance
 	
-	-- Speed settings
-	MIN_BOOST_POWER = 60, 
-	MAX_BOOST_POWER = 120, 
+	-- Speed settings (Reduced for balance)
+	MIN_BOOST_POWER = 55, 
+	MAX_BOOST_POWER = 100, -- Reduced from 120
 	BOOST_ACCEL = 6,
-	BOOST_DECAY = 0.15,
-	MIN_SPEED = 45,
-	JUMP_BOOST = 35,
+	BOOST_DECAY = 0.17, -- Slightly increased decay
+	MIN_SPEED = 47,
+	JUMP_BOOST = 30, -- Reduced from 35
 	
-	-- Duration settings
-	BASE_DURATION = 6,
-	MAX_DURATION = 10,
+	-- Duration settings (Reduced for balance)
+	BASE_DURATION = 5, -- Reduced from 6
+	MAX_DURATION = 8, -- Reduced from 10
 	
 	-- Endlag settings
-	ENDLAG_DURATION = 0.4, -- Smooth deceleration time
+	ENDLAG_DURATION = 0.4,
 	ENDLAG_HIP_RETURN_TIME = 0.3,
 	
 	-- Visual settings
@@ -38,7 +38,7 @@ local CONFIG = {
 	FLICKER_MIN_TRANSPARENCY = 0.35,
 	FLICKER_SNAP_TRANSPARENCY = 0.5,
 	FLICKER_MAX_TRANSPARENCY = 1.0,
-	FLICKER_FADE_TIME = 0.15, -- Time to fade from snap to max
+	FLICKER_FADE_TIME = 0.15,
 	
 	-- Sound settings
 	FLICKER_BASE_PITCH = 0.8,
@@ -46,7 +46,11 @@ local CONFIG = {
 	
 	-- Controls
 	KEYBIND = Enum.KeyCode.V,
-	COOLDOWN_TIME = 45,
+	
+	-- Cooldown settings (State-based)
+	COOLDOWN_COMPLETE = 45, -- Full spindash completion
+	COOLDOWN_CANCEL = 25, -- Manual cancel during roll
+	COOLDOWN_INSUFFICIENT = 10, -- Released without enough charge
 	
 	-- Assets
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
@@ -91,6 +95,7 @@ local State = {
 	defaultFov = 70,
 	
 	flickerCoroutine = nil,
+	cooldownCoroutine = nil, -- Track active cooldown to prevent stacking
 }
 
 -- Utility functions
@@ -118,6 +123,51 @@ local function calculateDuration(chargePercent)
 	return lerp(CONFIG.BASE_DURATION, CONFIG.MAX_DURATION, chargePercent)
 end
 
+-- Cooldown management (State-based, no stacking)
+function startCooldown(cooldownType)
+	-- Cancel any existing cooldown
+	if State.cooldownCoroutine then
+		task.cancel(State.cooldownCoroutine)
+		State.cooldownCoroutine = nil
+	end
+	
+	State.onCooldown = true
+	
+	local cooldownText = State.abilityButton:FindFirstChild("CooldownLabel")
+	local cooldownOverlay = State.abilityButton:FindFirstChild("Cooldown")
+	
+	-- Determine cooldown duration based on state
+	local cooldownDuration
+	if cooldownType == "complete" then
+		cooldownDuration = CONFIG.COOLDOWN_COMPLETE
+	elseif cooldownType == "cancel" then
+		cooldownDuration = CONFIG.COOLDOWN_CANCEL
+	elseif cooldownType == "insufficient" then
+		cooldownDuration = CONFIG.COOLDOWN_INSUFFICIENT
+	else
+		cooldownDuration = CONFIG.COOLDOWN_COMPLETE -- Default
+	end
+	
+	if cooldownText then cooldownText.Visible = true end
+	if cooldownOverlay then cooldownOverlay.Visible = true end
+	
+	local startTime = tick()
+	State.cooldownCoroutine = task.spawn(function()
+		while tick() - startTime < cooldownDuration do
+			if cooldownText then
+				cooldownText.Text = string.format("%.1f", cooldownDuration - (tick() - startTime))
+			end
+			task.wait(0.05)
+		end
+		
+		if cooldownText then cooldownText.Visible = false end
+		if cooldownOverlay then cooldownOverlay.Visible = false end
+		State.onCooldown = false
+		State.cooldownCoroutine = nil
+		updateButtonText()
+	end)
+end
+
 -- Highlight effects
 local function removeHighlight()
 	if State.highlight then
@@ -139,25 +189,20 @@ end
 local function flickerHighlight()
 	if not State.highlight or not State.flickerSound then return end
 	
-	-- Stop any existing flicker coroutine
 	if State.flickerCoroutine then
 		task.cancel(State.flickerCoroutine)
 	end
 	
 	State.flickerCoroutine = task.spawn(function()
 		while State.isCharging and State.highlight and State.flickerSound do
-			-- Calculate flicker speed based on charge percent
 			local flickerInterval = lerp(0.25, 0.08, State.chargePercent)
 			local pitch = lerp(CONFIG.FLICKER_BASE_PITCH, CONFIG.FLICKER_MAX_PITCH, State.chargePercent)
 			
-			-- Snap to starting transparency
 			State.highlight.FillTransparency = CONFIG.FLICKER_SNAP_TRANSPARENCY
 			
-			-- Play flicker sound with pitch based on charge
 			State.flickerSound.PlaybackSpeed = pitch
 			State.flickerSound:Play()
 			
-			-- Smooth fade to max transparency
 			local fadeStartTime = tick()
 			while tick() - fadeStartTime < CONFIG.FLICKER_FADE_TIME and State.isCharging do
 				local fadeProgress = (tick() - fadeStartTime) / CONFIG.FLICKER_FADE_TIME
@@ -231,7 +276,6 @@ local function applyEndlag()
 	local endlagStartSpeed = State.speed
 	local endlagStartTime = tick()
 	
-	-- Smooth deceleration
 	task.spawn(function()
 		while tick() - endlagStartTime < CONFIG.ENDLAG_DURATION do
 			local progress = (tick() - endlagStartTime) / CONFIG.ENDLAG_DURATION
@@ -249,7 +293,6 @@ local function applyEndlag()
 		updateButtonText()
 	end)
 	
-	-- Smooth hip height return
 	task.spawn(function()
 		local startHip = -1
 		local startTime = tick()
@@ -267,14 +310,14 @@ local function applyEndlag()
 end
 
 -- Core ability functions
-local function stopRoll(wasCanceled)
-	wasCanceled = wasCanceled or false
+local function stopRoll(endType)
+	-- endType: "complete", "cancel", "collision"
+	endType = endType or "complete"
 	
 	State.isCharging = false
 	State.isRolling = false
 	State.chargePercent = 0
 	
-	-- Stop flicker coroutine
 	if State.flickerCoroutine then
 		task.cancel(State.flickerCoroutine)
 		State.flickerCoroutine = nil
@@ -289,10 +332,10 @@ local function stopRoll(wasCanceled)
 		State.humanoid.JumpPower = State.defaultJumpPower
 		State.humanoid.AutoRotate = true
 		
-		-- Apply endlag only if not canceled
-		if not wasCanceled then
+		-- Apply endlag based on end type
+		if endType == "complete" or endType == "collision" then
 			applyEndlag()
-		else
+		else -- "cancel"
 			State.humanoid.HipHeight = State.defaultHipHeight
 			State.speed = 0
 			State.targetSpeed = 0
@@ -308,12 +351,15 @@ local function stopRoll(wasCanceled)
 end
 
 local function startRoll()
-	if State.chargePercent < (CONFIG.MIN_CHARGE_TIME / CONFIG.MAX_CHARGE_TIME) then
-		stopRoll(false)
+	local minChargeRequired = CONFIG.MIN_CHARGE_TIME / CONFIG.MAX_CHARGE_TIME
+	
+	if State.chargePercent < minChargeRequired then
+		-- Not enough charge - apply short cooldown
+		stopRoll("cancel")
+		startCooldown("insufficient")
 		return
 	end
 	
-	-- Stop flicker coroutine
 	if State.flickerCoroutine then
 		task.cancel(State.flickerCoroutine)
 		State.flickerCoroutine = nil
@@ -355,7 +401,8 @@ local function startRoll()
 				   v:FindFirstChild("HumanoidRootPart") then
 					local distance = (v.HumanoidRootPart.Position - State.hrp.Position).Magnitude
 					if distance < 6 then
-						stopRoll(false)
+						stopRoll("collision")
+						startCooldown("complete") -- Full cooldown on collision
 						break
 					end
 				end
@@ -369,7 +416,8 @@ local function startRoll()
 		while State.isRolling do
 			local elapsed = tick() - State.rollStartTime
 			if elapsed >= State.rollDuration then
-				stopRoll(false) -- Natural end, not canceled
+				stopRoll("complete")
+				startCooldown("complete") -- Full cooldown on natural completion
 				break
 			end
 			task.wait(0.1)
@@ -395,11 +443,10 @@ local function startCharge()
 	State.animTrack:AdjustSpeed(1)
 	
 	createHighlight()
-	flickerHighlight() -- Start the new flicker effect
+	flickerHighlight()
 	updateFOV()
 	updateButtonText()
 	
-	-- Charge loop
 	task.spawn(function()
 		while State.isCharging do
 			local elapsed = tick() - State.chargeStartTime
@@ -424,11 +471,11 @@ end
 
 local function cancelRoll()
 	if State.isRolling then
-		-- Play cancel sound
 		if State.cancelSound then
 			State.cancelSound:Play()
 		end
-		stopRoll(true) -- Mark as canceled
+		stopRoll("cancel")
+		startCooldown("cancel") -- Reduced cooldown on manual cancel
 	end
 end
 
@@ -447,43 +494,15 @@ local function onInputEnded(input, processed)
 	
 	if State.isCharging then
 		releaseCharge()
-		startCooldown()
 	elseif State.isRolling then
 		cancelRoll()
-		startCooldown()
 	end
-end
-
-function startCooldown()
-	State.onCooldown = true
-	
-	local cooldownText = State.abilityButton:FindFirstChild("CooldownLabel")
-	local cooldownOverlay = State.abilityButton:FindFirstChild("Cooldown")
-	
-	if cooldownText then cooldownText.Visible = true end
-	if cooldownOverlay then cooldownOverlay.Visible = true end
-	
-	local startTime = tick()
-	task.spawn(function()
-		while tick() - startTime < CONFIG.COOLDOWN_TIME do
-			if cooldownText then
-				cooldownText.Text = string.format("%.1f", CONFIG.COOLDOWN_TIME - (tick() - startTime))
-			end
-			task.wait(0.05)
-		end
-		
-		if cooldownText then cooldownText.Visible = false end
-		if cooldownOverlay then cooldownOverlay.Visible = false end
-		State.onCooldown = false
-		updateButtonText()
-	end)
 end
 
 -- Sound setup
 local function setupSounds()
 	if not State.hrp then return end
 	
-	-- Spindash sound
 	if not isfile("spindash.mp3") then
 		writefile("spindash.mp3", game:HttpGet(CONFIG.SPINDASH_SOUND))
 	end
@@ -491,10 +510,9 @@ local function setupSounds()
 	State.spinSound = State.hrp:FindFirstChild("SpindashSound") or Instance.new("Sound")
 	State.spinSound.Name = "SpindashSound"
 	State.spinSound.SoundId = getcustomasset("spindash.mp3")
-	State.spinSound.Volume = 1
+	State.spinSound.Volume = 1.2
 	State.spinSound.Parent = State.hrp
 	
-	-- Jump sound
 	if not isfile("jump.mp3") then
 		writefile("jump.mp3", game:HttpGet(CONFIG.JUMP_SOUND))
 	end
@@ -502,10 +520,9 @@ local function setupSounds()
 	State.jumpSound = State.hrp:FindFirstChild("JumpSound") or Instance.new("Sound")
 	State.jumpSound.Name = "JumpSound"
 	State.jumpSound.SoundId = getcustomasset("jump.mp3")
-	State.jumpSound.Volume = 0.9
+	State.jumpSound.Volume = 1.1
 	State.jumpSound.Parent = State.hrp
 	
-	-- Flicker sound
 	if not isfile("flicker.mp3") then
 		writefile("flicker.mp3", game:HttpGet(CONFIG.FLICKER_SOUND))
 	end
@@ -513,10 +530,9 @@ local function setupSounds()
 	State.flickerSound = State.hrp:FindFirstChild("FlickerSound") or Instance.new("Sound")
 	State.flickerSound.Name = "FlickerSound"
 	State.flickerSound.SoundId = getcustomasset("flicker.mp3")
-	State.flickerSound.Volume = 0.5
+	State.flickerSound.Volume = 1
 	State.flickerSound.Parent = State.hrp
 	
-	-- Cancel sound
 	if not isfile("cancel.mp3") then
 		writefile("cancel.mp3", game:HttpGet(CONFIG.CANCEL_SOUND))
 	end
@@ -524,7 +540,7 @@ local function setupSounds()
 	State.cancelSound = State.hrp:FindFirstChild("CancelSound") or Instance.new("Sound")
 	State.cancelSound.Name = "CancelSound"
 	State.cancelSound.SoundId = getcustomasset("cancel.mp3")
-	State.cancelSound.Volume = 0.8
+	State.cancelSound.Volume = 2
 	State.cancelSound.Parent = State.hrp
 end
 
@@ -546,7 +562,6 @@ local function setupCharacter()
 	State.defaultHipHeight = 0
 	State.defaultFov = cam.FieldOfView
 	
-	-- Jump boost
 	State.humanoid.Jumping:Connect(function()
 		if State.isRolling then
 			State.targetSpeed = math.clamp(State.targetSpeed + CONFIG.JUMP_BOOST, 0, CONFIG.MAX_BOOST_POWER)
@@ -556,14 +571,13 @@ local function setupCharacter()
 		end
 	end)
 	
-	stopRoll(false)
+	stopRoll("cancel")
 end
 
 -- Movement update
 RunService.Heartbeat:Connect(function(dt)
 	if not State.humanoid or not State.hrp then return end
 	
-	-- Handle rotation
 	if State.isCharging or State.isRolling then
 		local direction = getDirection()
 		if direction.Magnitude > 0 then
@@ -571,7 +585,6 @@ RunService.Heartbeat:Connect(function(dt)
 		end
 	end
 	
-	-- Handle rolling movement
 	if State.isRolling then
 		State.speed = lerp(State.speed, State.targetSpeed, math.clamp(dt * CONFIG.BOOST_ACCEL, 0, 1))
 		
@@ -612,10 +625,8 @@ local function createAbilityButton()
 	btn.MouseButton1Up:Connect(function()
 		if State.isCharging then
 			releaseCharge()
-			startCooldown()
 		elseif State.isRolling then
 			cancelRoll()
-			startCooldown()
 		end
 	end)
 	
@@ -626,11 +637,9 @@ end
 setupCharacter()
 createAbilityButton()
 
--- Input handlers
 UserInputService.InputBegan:Connect(onInputBegan)
 UserInputService.InputEnded:Connect(onInputEnded)
 
--- Character respawn handler
 player.CharacterAdded:Connect(function()
 	task.wait(0.5)
 	setupCharacter()
