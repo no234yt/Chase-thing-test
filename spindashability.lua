@@ -13,19 +13,19 @@ local CONFIG = {
 	
 	-- Charge settings
 	MAX_CHARGE_TIME = 2.5, -- Maximum charge time in seconds
-	MIN_CHARGE_TIME = 0.3, -- Minimum charge for activation
+	MIN_CHARGE_TIME = 1, -- Minimum charge for activation
 	
 	-- Speed settings
 	MIN_BOOST_POWER = 60, 
 	MAX_BOOST_POWER = 120, 
 	BOOST_ACCEL = 6,
 	BOOST_DECAY = 0.15,
-	MIN_SPEED = 50,
+	MIN_SPEED = 45,
 	JUMP_BOOST = 35,
 	
 	-- Duration settings
-	BASE_DURATION = 11, -- Base duration in seconds
-	MAX_DURATION = 15, -- Maximum duration at full charge
+	BASE_DURATION = 6, -- Base duration in seconds
+	MAX_DURATION = 10, -- Maximum duration at full charge
 	
 	-- Visual settings
 	FOV_CHARGE = 10,
@@ -33,7 +33,7 @@ local CONFIG = {
 	
 	-- Controls
 	KEYBIND = Enum.KeyCode.V,
-	COOLDOWN_TIME = 40,
+	COOLDOWN_TIME = 45,
 	
 	-- Assets
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
