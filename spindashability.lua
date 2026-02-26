@@ -3,7 +3,6 @@ local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-
 local player = Players.LocalPlayer
 local cam = workspace.CurrentCamera
 
@@ -12,8 +11,8 @@ local CONFIG = {
 	ANIM_ID = "rbxassetid://18752189666",
 	
 	-- Charge settings
-	MAX_CHARGE_TIME = 2.5, -- Maximum charge time in seconds
-	MIN_CHARGE_TIME = 1, -- Minimum charge for activation
+	MAX_CHARGE_TIME = 2.5,
+	MIN_CHARGE_TIME = 1,
 	
 	-- Speed settings
 	MIN_BOOST_POWER = 60, 
@@ -24,12 +23,26 @@ local CONFIG = {
 	JUMP_BOOST = 35,
 	
 	-- Duration settings
-	BASE_DURATION = 6, -- Base duration in seconds
-	MAX_DURATION = 10, -- Maximum duration at full charge
+	BASE_DURATION = 6,
+	MAX_DURATION = 10,
+	
+	-- Endlag settings
+	ENDLAG_DURATION = 0.4, -- Smooth deceleration time
+	ENDLAG_HIP_RETURN_TIME = 0.3,
 	
 	-- Visual settings
 	FOV_CHARGE = 10,
 	FOV_BOOST = 5,
+	
+	-- Flicker settings
+	FLICKER_MIN_TRANSPARENCY = 0.35,
+	FLICKER_SNAP_TRANSPARENCY = 0.5,
+	FLICKER_MAX_TRANSPARENCY = 1.0,
+	FLICKER_FADE_TIME = 0.15, -- Time to fade from snap to max
+	
+	-- Sound settings
+	FLICKER_BASE_PITCH = 0.8,
+	FLICKER_MAX_PITCH = 1.6,
 	
 	-- Controls
 	KEYBIND = Enum.KeyCode.V,
@@ -38,6 +51,8 @@ local CONFIG = {
 	-- Assets
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
+	FLICKER_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/9dd9b9a348a440bd1a61401b4b571aafe6f11514/electronicpingshort.mp3",
+	CANCEL_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/9dd9b9a348a440bd1a61401b4b571aafe6f11514/cancel.mp3",
 	ICON_URL = "https://raw.githubusercontent.com/no234yt/Chase-thing-test/c49e870a8db6d450d0af4c5f51c2ad6401a8be6c/Tak%20berjudul50_20251021221343.png",
 	ICON_FILE = "spindash_icon.png",
 	
@@ -52,14 +67,17 @@ local State = {
 	animTrack = nil,
 	spinSound = nil,
 	jumpSound = nil,
+	flickerSound = nil,
+	cancelSound = nil,
 	highlight = nil,
 	abilityButton = nil,
 	
 	isCharging = false,
 	isRolling = false,
+	isEndlag = false,
 	onCooldown = false,
 	
-	chargePercent = 0, -- 0 to 1
+	chargePercent = 0,
 	chargeStartTime = 0,
 	rollStartTime = 0,
 	rollDuration = 0,
@@ -70,7 +88,9 @@ local State = {
 	defaultWalkSpeed = 16,
 	defaultJumpPower = 50,
 	defaultHipHeight = 0,
-	defaultFov = 70
+	defaultFov = 70,
+	
+	flickerCoroutine = nil,
 }
 
 -- Utility functions
@@ -116,18 +136,49 @@ local function createHighlight()
 	State.highlight.OutlineTransparency = 0
 end
 
-local function flashHighlight()
-	if not State.highlight then return end
+local function flickerHighlight()
+	if not State.highlight or not State.flickerSound then return end
 	
-	task.spawn(function()
-		while State.isCharging and State.highlight do
-			State.highlight.Enabled = not State.highlight.Enabled
-			-- Flash faster as charge increases
-			local flashSpeed = lerp(0.15, 0.05, State.chargePercent)
-			task.wait(flashSpeed)
+	-- Stop any existing flicker coroutine
+	if State.flickerCoroutine then
+		task.cancel(State.flickerCoroutine)
+	end
+	
+	State.flickerCoroutine = task.spawn(function()
+		while State.isCharging and State.highlight and State.flickerSound do
+			-- Calculate flicker speed based on charge percent
+			local flickerInterval = lerp(0.25, 0.08, State.chargePercent)
+			local pitch = lerp(CONFIG.FLICKER_BASE_PITCH, CONFIG.FLICKER_MAX_PITCH, State.chargePercent)
+			
+			-- Snap to starting transparency
+			State.highlight.FillTransparency = CONFIG.FLICKER_SNAP_TRANSPARENCY
+			
+			-- Play flicker sound with pitch based on charge
+			State.flickerSound.PlaybackSpeed = pitch
+			State.flickerSound:Play()
+			
+			-- Smooth fade to max transparency
+			local fadeStartTime = tick()
+			while tick() - fadeStartTime < CONFIG.FLICKER_FADE_TIME and State.isCharging do
+				local fadeProgress = (tick() - fadeStartTime) / CONFIG.FLICKER_FADE_TIME
+				State.highlight.FillTransparency = lerp(
+					CONFIG.FLICKER_SNAP_TRANSPARENCY,
+					CONFIG.FLICKER_MAX_TRANSPARENCY,
+					fadeProgress
+				)
+				task.wait()
+			end
+			
+			if State.highlight then
+				State.highlight.FillTransparency = CONFIG.FLICKER_MAX_TRANSPARENCY
+			end
+			
+			task.wait(math.max(0, flickerInterval - CONFIG.FLICKER_FADE_TIME))
 		end
+		
 		if State.highlight then
 			State.highlight.Enabled = true
+			State.highlight.FillTransparency = 0.5
 		end
 	end)
 end
@@ -156,25 +207,78 @@ local function updateButtonText()
 	if not titleLabel then return end
 	
 	if State.isRolling then
-		titleLabel.Text = "Cancel"
+		local remainingTime = State.rollDuration - (tick() - State.rollStartTime)
+		titleLabel.Text = string.format("Cancel [%.1fs]", math.max(0, remainingTime))
 		titleLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
 	elseif State.isCharging then
 		local chargePercentDisplay = math.floor(State.chargePercent * 100)
-		titleLabel.Text = string.format("Roll [%d%%]", chargePercentDisplay)
+		titleLabel.Text = string.format("Charging... %d%%", chargePercentDisplay)
 		titleLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+	elseif State.isEndlag then
+		titleLabel.Text = "Recovering..."
+		titleLabel.TextColor3 = Color3.fromRGB(200, 200, 100)
 	else
-		titleLabel.Text = "Charge (Hold)"
+		titleLabel.Text = "Spindash (Hold)"
 		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 	end
 end
 
+-- Endlag function
+local function applyEndlag()
+	State.isEndlag = true
+	updateButtonText()
+	
+	local endlagStartSpeed = State.speed
+	local endlagStartTime = tick()
+	
+	-- Smooth deceleration
+	task.spawn(function()
+		while tick() - endlagStartTime < CONFIG.ENDLAG_DURATION do
+			local progress = (tick() - endlagStartTime) / CONFIG.ENDLAG_DURATION
+			State.speed = lerp(endlagStartSpeed, State.defaultWalkSpeed, progress)
+			
+			local velocity = getDirection() * State.speed
+			if State.hrp then
+				State.hrp.AssemblyLinearVelocity = Vector3.new(velocity.X, State.hrp.AssemblyLinearVelocity.Y, velocity.Z)
+			end
+			
+			task.wait()
+		end
+		
+		State.isEndlag = false
+		updateButtonText()
+	end)
+	
+	-- Smooth hip height return
+	task.spawn(function()
+		local startHip = -1
+		local startTime = tick()
+		
+		while tick() - startTime < CONFIG.ENDLAG_HIP_RETURN_TIME and State.humanoid do
+			local progress = (tick() - startTime) / CONFIG.ENDLAG_HIP_RETURN_TIME
+			State.humanoid.HipHeight = lerp(startHip, State.defaultHipHeight, progress)
+			task.wait()
+		end
+		
+		if State.humanoid then
+			State.humanoid.HipHeight = State.defaultHipHeight
+		end
+	end)
+end
+
 -- Core ability functions
-local function stopRoll()
+local function stopRoll(wasCanceled)
+	wasCanceled = wasCanceled or false
+	
 	State.isCharging = false
 	State.isRolling = false
-	State.speed = 0
-	State.targetSpeed = 0
 	State.chargePercent = 0
+	
+	-- Stop flicker coroutine
+	if State.flickerCoroutine then
+		task.cancel(State.flickerCoroutine)
+		State.flickerCoroutine = nil
+	end
 	
 	if State.animTrack then
 		State.animTrack:Stop()
@@ -183,8 +287,19 @@ local function stopRoll()
 	if State.humanoid then
 		State.humanoid.WalkSpeed = State.defaultWalkSpeed
 		State.humanoid.JumpPower = State.defaultJumpPower
-		State.humanoid.HipHeight = State.defaultHipHeight
 		State.humanoid.AutoRotate = true
+		
+		-- Apply endlag only if not canceled
+		if not wasCanceled then
+			applyEndlag()
+		else
+			State.humanoid.HipHeight = State.defaultHipHeight
+			State.speed = 0
+			State.targetSpeed = 0
+		end
+	else
+		State.speed = 0
+		State.targetSpeed = 0
 	end
 	
 	removeHighlight()
@@ -194,16 +309,20 @@ end
 
 local function startRoll()
 	if State.chargePercent < (CONFIG.MIN_CHARGE_TIME / CONFIG.MAX_CHARGE_TIME) then
-		-- Not enough charge
-		stopRoll()
+		stopRoll(false)
 		return
+	end
+	
+	-- Stop flicker coroutine
+	if State.flickerCoroutine then
+		task.cancel(State.flickerCoroutine)
+		State.flickerCoroutine = nil
 	end
 	
 	State.isCharging = false
 	State.isRolling = true
 	State.rollStartTime = tick()
 	
-	-- Calculate power and duration based on charge
 	local boostPower = calculateBoostPower(State.chargePercent)
 	State.rollDuration = calculateDuration(State.chargePercent)
 	State.speed = boostPower
@@ -214,11 +333,18 @@ local function startRoll()
 	end
 	
 	updateFOV()
-	updateButtonText()
 	
 	if State.humanoid then
 		State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
+	
+	-- Update button text continuously during roll
+	task.spawn(function()
+		while State.isRolling do
+			updateButtonText()
+			task.wait(0.1)
+		end
+	end)
 	
 	-- Killer collision detection
 	task.spawn(function()
@@ -229,7 +355,7 @@ local function startRoll()
 				   v:FindFirstChild("HumanoidRootPart") then
 					local distance = (v.HumanoidRootPart.Position - State.hrp.Position).Magnitude
 					if distance < 6 then
-						stopRoll()
+						stopRoll(false)
 						break
 					end
 				end
@@ -243,7 +369,7 @@ local function startRoll()
 		while State.isRolling do
 			local elapsed = tick() - State.rollStartTime
 			if elapsed >= State.rollDuration then
-				stopRoll()
+				stopRoll(false) -- Natural end, not canceled
 				break
 			end
 			task.wait(0.1)
@@ -252,7 +378,7 @@ local function startRoll()
 end
 
 local function startCharge()
-	if State.isCharging or State.isRolling or not State.humanoid or State.onCooldown then
+	if State.isCharging or State.isRolling or State.isEndlag or not State.humanoid or State.onCooldown then
 		return
 	end
 	
@@ -269,7 +395,7 @@ local function startCharge()
 	State.animTrack:AdjustSpeed(1)
 	
 	createHighlight()
-	flashHighlight()
+	flickerHighlight() -- Start the new flicker effect
 	updateFOV()
 	updateButtonText()
 	
@@ -279,7 +405,6 @@ local function startCharge()
 			local elapsed = tick() - State.chargeStartTime
 			State.chargePercent = math.clamp(elapsed / CONFIG.MAX_CHARGE_TIME, 0, 1)
 			
-			-- Speed up animation as charge increases
 			if State.animTrack then
 				local animSpeed = lerp(1, 3, State.chargePercent)
 				State.animTrack:AdjustSpeed(animSpeed)
@@ -299,23 +424,11 @@ end
 
 local function cancelRoll()
 	if State.isRolling then
-		stopRoll()
-	end
-end
-
-local function triggerAbility()
-	if State.onCooldown then return end
-	
-	if State.isRolling then
-		-- Cancel if rolling
-		cancelRoll()
-		startCooldown()
-	elseif State.isCharging then
-		-- Release charge if charging
-		releaseCharge()
-	else
-		-- Start charging
-		startCharge()
+		-- Play cancel sound
+		if State.cancelSound then
+			State.cancelSound:Play()
+		end
+		stopRoll(true) -- Mark as canceled
 	end
 end
 
@@ -323,7 +436,7 @@ local function onInputBegan(input, processed)
 	if processed then return end
 	if input.KeyCode ~= CONFIG.KEYBIND then return end
 	
-	if not State.isCharging and not State.isRolling then
+	if not State.isCharging and not State.isRolling and not State.isEndlag then
 		startCharge()
 	end
 end
@@ -391,6 +504,28 @@ local function setupSounds()
 	State.jumpSound.SoundId = getcustomasset("jump.mp3")
 	State.jumpSound.Volume = 0.9
 	State.jumpSound.Parent = State.hrp
+	
+	-- Flicker sound
+	if not isfile("flicker.mp3") then
+		writefile("flicker.mp3", game:HttpGet(CONFIG.FLICKER_SOUND))
+	end
+	
+	State.flickerSound = State.hrp:FindFirstChild("FlickerSound") or Instance.new("Sound")
+	State.flickerSound.Name = "FlickerSound"
+	State.flickerSound.SoundId = getcustomasset("flicker.mp3")
+	State.flickerSound.Volume = 0.5
+	State.flickerSound.Parent = State.hrp
+	
+	-- Cancel sound
+	if not isfile("cancel.mp3") then
+		writefile("cancel.mp3", game:HttpGet(CONFIG.CANCEL_SOUND))
+	end
+	
+	State.cancelSound = State.hrp:FindFirstChild("CancelSound") or Instance.new("Sound")
+	State.cancelSound.Name = "CancelSound"
+	State.cancelSound.SoundId = getcustomasset("cancel.mp3")
+	State.cancelSound.Volume = 0.8
+	State.cancelSound.Parent = State.hrp
 end
 
 -- Character setup
@@ -421,7 +556,7 @@ local function setupCharacter()
 		end
 	end)
 	
-	stopRoll()
+	stopRoll(false)
 end
 
 -- Movement update
@@ -461,15 +596,28 @@ local function createAbilityButton()
 	local btn = template:Clone()
 	btn.Name = CONFIG.BUTTON_NAME
 	btn.Icon.Image = ensureFile(CONFIG.ICON_FILE, CONFIG.ICON_URL)
-	btn.Title.Text = "Charge (Hold)"
+	btn.Title.Text = "Spindash (Hold)"
 	btn.Input.Text = "V"
 	btn.Visible = true
 	btn.Parent = abilitiesFrame
 	
 	State.abilityButton = btn
 	
-	-- Button click handler
-	btn.MouseButton1Click:Connect(triggerAbility)
+	btn.MouseButton1Down:Connect(function()
+		if not State.isCharging and not State.isRolling and not State.isEndlag and not State.onCooldown then
+			startCharge()
+		end
+	end)
+	
+	btn.MouseButton1Up:Connect(function()
+		if State.isCharging then
+			releaseCharge()
+			startCooldown()
+		elseif State.isRolling then
+			cancelRoll()
+			startCooldown()
+		end
+	end)
 	
 	return btn
 end
@@ -487,5 +635,3 @@ player.CharacterAdded:Connect(function()
 	task.wait(0.5)
 	setupCharacter()
 end)
-
-print("Enhanced Spindash System loaded!")
