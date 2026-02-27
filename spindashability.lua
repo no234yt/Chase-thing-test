@@ -21,7 +21,7 @@ local CONFIG = {
 	JUMP_BOOST = 30,
 	
 	BASE_DURATION = 5,
-	MAX_DURATION = 8,
+	MAX_DURATION = 7,
 	
 	ENDLAG_DURATION = 0.4,
 	ENDLAG_HIP_RETURN_TIME = 0.3,
@@ -35,7 +35,7 @@ local CONFIG = {
 	FLICKER_FADE_TIME = 0.15,
 	
 	FLICKER_BASE_PITCH = 0.8,
-	FLICKER_MAX_PITCH = 1.6,
+	FLICKER_MAX_PITCH = 1.2,
 	
 	KEYBIND = Enum.KeyCode.V,
 	
@@ -43,8 +43,8 @@ local CONFIG = {
 	COOLDOWN_CANCEL = 25,
 	COOLDOWN_INSUFFICIENT = 10,
 	
-	DEFAULT_JUMPPOWER = 50,
-	JUMP_COOLDOWN = 0.8,
+	JUMP_HEIGHT = 7.2,
+	JUMP_COOLDOWN = 1.5,
 	
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
@@ -88,6 +88,7 @@ local State = {
 	
 	flickerCoroutine = nil,
 	cooldownCoroutine = nil,
+	rollUpdateConnection = nil,
 	
 	jumpBtn = nil,
 	jumpConnections = {},
@@ -417,6 +418,11 @@ local function stopRoll(endType)
 	State.isRolling = false
 	State.chargePercent = 0
 	
+	if State.rollUpdateConnection then
+		State.rollUpdateConnection:Disconnect()
+		State.rollUpdateConnection = nil
+	end
+	
 	hideJumpButton()
 	
 	if State.flickerCoroutine then
@@ -473,7 +479,23 @@ local function startRoll()
 	State.speed = boostPower
 	State.targetSpeed = boostPower
 	
-	showJumpButton()
+	State.rollUpdateConnection = RunService.RenderStepped:Connect(function()
+		if State.isRolling then
+			showJumpButton()
+			
+			local char = player.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				if hum then
+					if hum.UseJumpPower then
+						hum.JumpPower = CONFIG.JUMP_HEIGHT * 50 / 7.2
+					else
+						hum.JumpHeight = CONFIG.JUMP_HEIGHT
+					end
+				end
+			end
+		end
+	end)
 	
 	if State.spinSound then
 		State.spinSound:Play()
@@ -553,6 +575,11 @@ local function startCharge()
 			if State.animTrack then
 				local animSpeed = lerp(1, 3, State.chargePercent)
 				State.animTrack:AdjustSpeed(animSpeed)
+			end
+			
+			if State.chargePercent >= 1.0 then
+				startRoll()
+				break
 			end
 			
 			updateButtonText()
