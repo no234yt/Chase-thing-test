@@ -14,7 +14,7 @@ local CONFIG = {
 	MAX_CHARGE_TIME = 2.5,
 	MIN_CHARGE_TIME = 1.2, -- Increased for balance
 	
-	-- Speed settings (Reduced for balance)
+	-- Speed settings
 	MIN_BOOST_POWER = 55, 
 	MAX_BOOST_POWER = 100, -- Reduced from 120
 	BOOST_ACCEL = 6,
@@ -22,7 +22,7 @@ local CONFIG = {
 	MIN_SPEED = 47,
 	JUMP_BOOST = 30, -- Reduced from 35
 	
-	-- Duration settings (Reduced for balance)
+	-- Duration settings
 	BASE_DURATION = 5, -- Reduced from 6
 	MAX_DURATION = 8, -- Reduced from 10
 	
