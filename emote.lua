@@ -252,5 +252,5 @@ UserInputService.InputBegan:Connect(function(input,gp)
 end)
 
 local msg=Instance.new("Message",workspace)
-msg.Text="script made by no234 !! ^^ \nalso its wip, so there might be bugs.. you can report them to no234_2 in discord !!\nenjoy!"
+msg.Text="script made by no234 !! ^^ \nthis script wont be updated anymore, since i stopped exploiting."
 task.delay(1.95,function() msg:Destroy() end)
