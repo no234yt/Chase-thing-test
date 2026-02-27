@@ -5,54 +5,47 @@ local UserInputService = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local cam = workspace.CurrentCamera
+local playerGui = player:WaitForChild("PlayerGui")
 
--- Configuration
 local CONFIG = {
 	ANIM_ID = "rbxassetid://18752189666",
 	
-	-- Charge settings
 	MAX_CHARGE_TIME = 2.5,
-	MIN_CHARGE_TIME = 1.2, -- Increased for balance
+	MIN_CHARGE_TIME = 1.2,
 	
-	-- Speed settings
 	MIN_BOOST_POWER = 55, 
-	MAX_BOOST_POWER = 100, -- Reduced from 120
+	MAX_BOOST_POWER = 100,
 	BOOST_ACCEL = 6,
-	BOOST_DECAY = 0.17, -- Slightly increased decay
+	BOOST_DECAY = 0.17,
 	MIN_SPEED = 47,
-	JUMP_BOOST = 30, -- Reduced from 35
+	JUMP_BOOST = 30,
 	
-	-- Duration settings
-	BASE_DURATION = 5, -- Reduced from 6
-	MAX_DURATION = 8, -- Reduced from 10
+	BASE_DURATION = 5,
+	MAX_DURATION = 8,
 	
-	-- Endlag settings
 	ENDLAG_DURATION = 0.4,
 	ENDLAG_HIP_RETURN_TIME = 0.3,
 	
-	-- Visual settings
 	FOV_CHARGE = 10,
 	FOV_BOOST = 5,
 	
-	-- Flicker settings
 	FLICKER_MIN_TRANSPARENCY = 0.35,
 	FLICKER_SNAP_TRANSPARENCY = 0.5,
 	FLICKER_MAX_TRANSPARENCY = 1.0,
 	FLICKER_FADE_TIME = 0.15,
 	
-	-- Sound settings
 	FLICKER_BASE_PITCH = 0.8,
 	FLICKER_MAX_PITCH = 1.6,
 	
-	-- Controls
 	KEYBIND = Enum.KeyCode.V,
 	
-	-- Cooldown settings (State-based)
-	COOLDOWN_COMPLETE = 45, -- Full spindash completion
-	COOLDOWN_CANCEL = 25, -- Manual cancel during roll
-	COOLDOWN_INSUFFICIENT = 10, -- Released without enough charge
+	COOLDOWN_COMPLETE = 45,
+	COOLDOWN_CANCEL = 25,
+	COOLDOWN_INSUFFICIENT = 10,
 	
-	-- Assets
+	DEFAULT_JUMPPOWER = 50,
+	JUMP_COOLDOWN = 0.8,
+	
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
 	FLICKER_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/9dd9b9a348a440bd1a61401b4b571aafe6f11514/electronicpingshort.mp3",
@@ -63,7 +56,6 @@ local CONFIG = {
 	BUTTON_NAME = "Spindash"
 }
 
--- State variables
 local State = {
 	character = nil,
 	humanoid = nil,
@@ -95,10 +87,13 @@ local State = {
 	defaultFov = 70,
 	
 	flickerCoroutine = nil,
-	cooldownCoroutine = nil, -- Track active cooldown to prevent stacking
+	cooldownCoroutine = nil,
+	
+	jumpBtn = nil,
+	jumpConnections = {},
+	canJump = true,
 }
 
--- Utility functions
 local function lerp(a, b, t)
 	return a + (b - a) * t
 end
@@ -123,9 +118,120 @@ local function calculateDuration(chargePercent)
 	return lerp(CONFIG.BASE_DURATION, CONFIG.MAX_DURATION, chargePercent)
 end
 
--- Cooldown management (State-based, no stacking)
+local function findJumpBtn()
+	local main = playerGui:FindFirstChild("MainGui")
+	if not main then return nil end
+	local mobile = main:FindFirstChild("Mobile")
+	if not mobile then return nil end
+	local btn = mobile:FindFirstChild("JumpBtn")
+	if btn and btn:IsA("GuiObject") then
+		return btn
+	end
+	return nil
+end
+
+local function makeBackupButton()
+	local main = playerGui:FindFirstChild("MainGui")
+	if not main then
+		main = Instance.new("ScreenGui")
+		main.Name = "MainGui"
+		main.ResetOnSpawn = false
+		main.Parent = playerGui
+	end
+
+	local mobile = main:FindFirstChild("Mobile")
+	if not mobile then
+		mobile = Instance.new("Frame")
+		mobile.Name = "Mobile"
+		mobile.Size = UDim2.new(1, 0, 1, 0)
+		mobile.BackgroundTransparency = 1
+		mobile.Parent = main
+	end
+
+	local btn = Instance.new("ImageButton")
+	btn.Name = "JumpBtn"
+	btn.Size = UDim2.new(0, 70, 0, 70)
+	btn.Position = UDim2.new(1, -90, 1, -90)
+	btn.AnchorPoint = Vector2.new(1, 1)
+	btn.BackgroundTransparency = 1
+	btn.Image = ""
+	btn.AutoButtonColor = true
+	btn.Visible = false
+	btn.Parent = mobile
+	return btn
+end
+
+local function disconnectJumpConnections()
+	for _, c in ipairs(State.jumpConnections) do
+		if c and typeof(c) == "RBXScriptConnection" then
+			pcall(function() c:Disconnect() end)
+		end
+	end
+	State.jumpConnections = {}
+end
+
+local function requestJump()
+	if not State.canJump or not State.isRolling then return end
+	State.canJump = false
+
+	local char = player.Character
+	local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.Jump = true
+		pcall(function()
+			humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+		end)
+	end
+
+	if State.jumpBtn then
+		State.jumpBtn.ImageTransparency = 0.5
+		task.delay(CONFIG.JUMP_COOLDOWN, function()
+			if State.jumpBtn then
+				State.jumpBtn.ImageTransparency = 0
+			end
+		end)
+	end
+
+	task.delay(CONFIG.JUMP_COOLDOWN, function()
+		State.canJump = true
+	end)
+end
+
+local function bindJumpButton(btn)
+	if not btn or btn.Name ~= "JumpBtn" or btn == State.jumpBtn then return end
+	disconnectJumpConnections()
+	State.jumpBtn = btn
+
+	table.insert(State.jumpConnections, btn.Activated:Connect(requestJump))
+	table.insert(State.jumpConnections, btn.MouseButton1Click:Connect(requestJump))
+	table.insert(State.jumpConnections, btn.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			requestJump()
+		end
+	end))
+end
+
+local function showJumpButton()
+	local btn = findJumpBtn()
+	if not btn then
+		btn = makeBackupButton()
+	end
+	if btn ~= State.jumpBtn then
+		bindJumpButton(btn)
+	end
+	if btn then
+		btn.Visible = true
+	end
+end
+
+local function hideJumpButton()
+	local btn = findJumpBtn()
+	if btn then
+		btn.Visible = false
+	end
+end
+
 function startCooldown(cooldownType)
-	-- Cancel any existing cooldown
 	if State.cooldownCoroutine then
 		task.cancel(State.cooldownCoroutine)
 		State.cooldownCoroutine = nil
@@ -136,7 +242,6 @@ function startCooldown(cooldownType)
 	local cooldownText = State.abilityButton:FindFirstChild("CooldownLabel")
 	local cooldownOverlay = State.abilityButton:FindFirstChild("Cooldown")
 	
-	-- Determine cooldown duration based on state
 	local cooldownDuration
 	if cooldownType == "complete" then
 		cooldownDuration = CONFIG.COOLDOWN_COMPLETE
@@ -145,7 +250,7 @@ function startCooldown(cooldownType)
 	elseif cooldownType == "insufficient" then
 		cooldownDuration = CONFIG.COOLDOWN_INSUFFICIENT
 	else
-		cooldownDuration = CONFIG.COOLDOWN_COMPLETE -- Default
+		cooldownDuration = CONFIG.COOLDOWN_COMPLETE
 	end
 	
 	if cooldownText then cooldownText.Visible = true end
@@ -168,7 +273,6 @@ function startCooldown(cooldownType)
 	end)
 end
 
--- Highlight effects
 local function removeHighlight()
 	if State.highlight then
 		State.highlight:Destroy()
@@ -228,7 +332,6 @@ local function flickerHighlight()
 	end)
 end
 
--- FOV management
 local function updateFOV()
 	task.spawn(function()
 		while State.isCharging or State.isRolling do
@@ -244,7 +347,6 @@ local function updateFOV()
 	end)
 end
 
--- Button text management
 local function updateButtonText()
 	if not State.abilityButton then return end
 	
@@ -268,7 +370,6 @@ local function updateButtonText()
 	end
 end
 
--- Endlag function
 local function applyEndlag()
 	State.isEndlag = true
 	updateButtonText()
@@ -309,14 +410,14 @@ local function applyEndlag()
 	end)
 end
 
--- Core ability functions
 local function stopRoll(endType)
-	-- endType: "complete", "cancel", "collision"
 	endType = endType or "complete"
 	
 	State.isCharging = false
 	State.isRolling = false
 	State.chargePercent = 0
+	
+	hideJumpButton()
 	
 	if State.flickerCoroutine then
 		task.cancel(State.flickerCoroutine)
@@ -332,10 +433,9 @@ local function stopRoll(endType)
 		State.humanoid.JumpPower = State.defaultJumpPower
 		State.humanoid.AutoRotate = true
 		
-		-- Apply endlag based on end type
 		if endType == "complete" or endType == "collision" then
 			applyEndlag()
-		else -- "cancel"
+		else
 			State.humanoid.HipHeight = State.defaultHipHeight
 			State.speed = 0
 			State.targetSpeed = 0
@@ -354,7 +454,6 @@ local function startRoll()
 	local minChargeRequired = CONFIG.MIN_CHARGE_TIME / CONFIG.MAX_CHARGE_TIME
 	
 	if State.chargePercent < minChargeRequired then
-		-- Not enough charge - apply short cooldown
 		stopRoll("cancel")
 		startCooldown("insufficient")
 		return
@@ -374,6 +473,8 @@ local function startRoll()
 	State.speed = boostPower
 	State.targetSpeed = boostPower
 	
+	showJumpButton()
+	
 	if State.spinSound then
 		State.spinSound:Play()
 	end
@@ -384,7 +485,6 @@ local function startRoll()
 		State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
 	
-	-- Update button text continuously during roll
 	task.spawn(function()
 		while State.isRolling do
 			updateButtonText()
@@ -392,7 +492,6 @@ local function startRoll()
 		end
 	end)
 	
-	-- Killer collision detection
 	task.spawn(function()
 		while State.isRolling do
 			for _, v in pairs(workspace:GetChildren()) do
@@ -402,7 +501,7 @@ local function startRoll()
 					local distance = (v.HumanoidRootPart.Position - State.hrp.Position).Magnitude
 					if distance < 6 then
 						stopRoll("collision")
-						startCooldown("complete") -- Full cooldown on collision
+						startCooldown("complete")
 						break
 					end
 				end
@@ -411,13 +510,12 @@ local function startRoll()
 		end
 	end)
 	
-	-- Duration timer
 	task.spawn(function()
 		while State.isRolling do
 			local elapsed = tick() - State.rollStartTime
 			if elapsed >= State.rollDuration then
 				stopRoll("complete")
-				startCooldown("complete") -- Full cooldown on natural completion
+				startCooldown("complete")
 				break
 			end
 			task.wait(0.1)
@@ -475,7 +573,7 @@ local function cancelRoll()
 			State.cancelSound:Play()
 		end
 		stopRoll("cancel")
-		startCooldown("cancel") -- Reduced cooldown on manual cancel
+		startCooldown("cancel")
 	end
 end
 
@@ -499,7 +597,6 @@ local function onInputEnded(input, processed)
 	end
 end
 
--- Sound setup
 local function setupSounds()
 	if not State.hrp then return end
 	
@@ -544,7 +641,6 @@ local function setupSounds()
 	State.cancelSound.Parent = State.hrp
 end
 
--- Character setup
 local function setupCharacter()
 	State.character = player.Character or player.CharacterAdded:Wait()
 	State.humanoid = State.character:WaitForChild("Humanoid")
@@ -574,7 +670,6 @@ local function setupCharacter()
 	stopRoll("cancel")
 end
 
--- Movement update
 RunService.Heartbeat:Connect(function(dt)
 	if not State.humanoid or not State.hrp then return end
 	
@@ -600,7 +695,6 @@ RunService.Heartbeat:Connect(function(dt)
 	end
 end)
 
--- UI setup
 local function createAbilityButton()
 	local mainGui = player:WaitForChild("PlayerGui"):WaitForChild("MainGui")
 	local template = mainGui.Client.Modules.Ability:WaitForChild("AbilityTemplate")
@@ -633,9 +727,10 @@ local function createAbilityButton()
 	return btn
 end
 
--- Initialize
 setupCharacter()
 createAbilityButton()
+
+hideJumpButton()
 
 UserInputService.InputBegan:Connect(onInputBegan)
 UserInputService.InputEnded:Connect(onInputEnded)
