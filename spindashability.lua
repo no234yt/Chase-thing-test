@@ -47,9 +47,9 @@ local CONFIG = {
 	JUMP_HEIGHT  = 7.2,
 	JUMP_COOLDOWN = 1.5,
 
-	KNOCKBACK_MULTIPLIER = 5,
+	KNOCKBACK_MULTIPLIER = 10,
 	KNOCKBACK_UP         = 10,
-	KNOCKBACK_MOVE       = 0.15,
+	KNOCKBACK_MOVE       = 0.1,
 
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND     = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
