@@ -24,13 +24,13 @@ local CONFIG = {
 	BASE_DURATION = 5,
 	MAX_DURATION  = 7,
 
-	-- Endlag: only used on CANCEL
+	-- Endlag: only used on CANCEL now
 	ENDLAG_DURATION        = 0.4,
 	ENDLAG_HIP_RETURN_TIME = 0.3,
 
 	-- Tired state: triggered on natural end and killer collision
-	TIRED_SLOWDOWN_TIME = 0.9,
-	TIRED_DURATION      = 2.2,
+	TIRED_SLOWDOWN_TIME = 0.9,  -- seconds to coast to a stop
+	TIRED_DURATION      = 2.2,  -- seconds frozen after stopping
 
 	FOV_CHARGE = 10,
 	FOV_BOOST  = 5,
@@ -52,15 +52,9 @@ local CONFIG = {
 	JUMP_HEIGHT   = 7.2,
 	JUMP_COOLDOWN = 1.5,
 
-	-- ── Knockback (direct proximity — replaces old spike loop) ───────────────
-	-- KNOCKBACK_FORCE:    base horizontal impulse at max rolling speed (studs/s)
-	-- KNOCKBACK_UP:       vertical component of the impulse
-	-- KNOCKBACK_RADIUS:   how close (studs) a target must be to receive a hit
-	-- KNOCKBACK_COOLDOWN: seconds before the same target can be hit again
-	KNOCKBACK_FORCE    = 75,
-	KNOCKBACK_UP       = 30,
-	KNOCKBACK_RADIUS   = 5,
-	KNOCKBACK_COOLDOWN = 0.25,
+	KNOCKBACK_MULTIPLIER = 12.5,
+	KNOCKBACK_UP         = 30,
+	KNOCKBACK_MOVE       = 0.1,
 
 	-- Bounce away when you hit a killer
 	BOUNCE_SPEED = 32,
@@ -107,11 +101,11 @@ local State = {
 	defaultHipHeight = 0,
 	defaultFov       = 70,
 
-	flickerCoroutine      = nil,
-	cooldownCoroutine     = nil,
-	rollUpdateConnection  = nil,  -- RenderStepped: jump-button + jump-height
-	rollPhysicsConnection = nil,  -- Heartbeat:     speed decay + BodyVelocity drive
-	knockbackConnection   = nil,  -- Heartbeat:     proximity knockback scanner
+	flickerCoroutine     = nil,
+	cooldownCoroutine    = nil,
+	rollUpdateConnection = nil,
+
+	knockbackActive = false,
 
 	bodyVelocity = nil,
 
@@ -119,10 +113,6 @@ local State = {
 	jumpConnections = {},
 	canJump         = true,
 }
-
--- Per-target knockback cooldown:  model → timestamp of last hit
--- Declared at module level so stopRoll can wipe it by reassignment.
-local knockedTargets = {}
 
 -- ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -264,33 +254,9 @@ local function hideJumpButton()
 	if btn then btn.Visible = false end
 end
 
--- ── Button text (defined early — referenced by startCooldown) ─────────────────
-
-local function updateButtonText()
-	if not State.abilityButton then return end
-	local titleLabel = State.abilityButton:FindFirstChild("Title")
-	if not titleLabel then return end
-
-	if State.isTired then
-		titleLabel.Text       = "Exhausted..."
-		titleLabel.TextColor3 = Color3.fromRGB(150, 150, 255)
-	elseif State.isRolling then
-		local remainingTime = State.rollDuration - (tick() - State.rollStartTime)
-		titleLabel.Text       = string.format("Cancel [%.1fs]", math.max(0, remainingTime))
-		titleLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-	elseif State.isCharging then
-		titleLabel.Text       = string.format("Charging... %d%%", math.floor(State.chargePercent * 100))
-		titleLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
-	elseif State.isEndlag then
-		titleLabel.Text       = "Recovering..."
-		titleLabel.TextColor3 = Color3.fromRGB(200, 200, 100)
-	else
-		titleLabel.Text       = "Spindash (Hold)"
-		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
-	end
-end
-
 -- ── Cooldown ──────────────────────────────────────────────────────────────────
+
+local function updateButtonText() end -- forward declaration
 
 function startCooldown(cooldownType)
 	if State.cooldownCoroutine then
@@ -299,14 +265,14 @@ function startCooldown(cooldownType)
 	end
 	State.onCooldown = true
 
-	local cooldownText    = State.abilityButton and State.abilityButton:FindFirstChild("CooldownLabel")
-	local cooldownOverlay = State.abilityButton and State.abilityButton:FindFirstChild("Cooldown")
+	local cooldownText    = State.abilityButton:FindFirstChild("CooldownLabel")
+	local cooldownOverlay = State.abilityButton:FindFirstChild("Cooldown")
 
 	local cooldownDuration
-	if     cooldownType == "complete"     then cooldownDuration = CONFIG.COOLDOWN_COMPLETE
-	elseif cooldownType == "cancel"       then cooldownDuration = CONFIG.COOLDOWN_CANCEL
-	elseif cooldownType == "insufficient" then cooldownDuration = CONFIG.COOLDOWN_INSUFFICIENT
-	else                                       cooldownDuration = CONFIG.COOLDOWN_COMPLETE
+	if     cooldownType == "complete"      then cooldownDuration = CONFIG.COOLDOWN_COMPLETE
+	elseif cooldownType == "cancel"        then cooldownDuration = CONFIG.COOLDOWN_CANCEL
+	elseif cooldownType == "insufficient"  then cooldownDuration = CONFIG.COOLDOWN_INSUFFICIENT
+	else                                        cooldownDuration = CONFIG.COOLDOWN_COMPLETE
 	end
 
 	if cooldownText    then cooldownText.Visible    = true end
@@ -401,6 +367,32 @@ local function updateFOV()
 	end)
 end
 
+-- ── Button text ───────────────────────────────────────────────────────────────
+
+function updateButtonText()
+	if not State.abilityButton then return end
+	local titleLabel = State.abilityButton:FindFirstChild("Title")
+	if not titleLabel then return end
+
+	if State.isTired then
+		titleLabel.Text       = "Exhausted..."
+		titleLabel.TextColor3 = Color3.fromRGB(150, 150, 255)
+	elseif State.isRolling then
+		local remainingTime = State.rollDuration - (tick() - State.rollStartTime)
+		titleLabel.Text       = string.format("Cancel [%.1fs]", math.max(0, remainingTime))
+		titleLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+	elseif State.isCharging then
+		titleLabel.Text       = string.format("Charging... %d%%", math.floor(State.chargePercent * 100))
+		titleLabel.TextColor3 = Color3.fromRGB(100, 255, 100)
+	elseif State.isEndlag then
+		titleLabel.Text       = "Recovering..."
+		titleLabel.TextColor3 = Color3.fromRGB(200, 200, 100)
+	else
+		titleLabel.Text       = "Spindash (Hold)"
+		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+	end
+end
+
 -- ── Endlag — cancel only ──────────────────────────────────────────────────────
 
 local function applyEndlag()
@@ -437,36 +429,47 @@ local function applyEndlag()
 	end)
 end
 
--- ── Tired state — natural/collision end ──────────────────────────────────────
+-- ── Tired state ───────────────────────────────────────────────────────────────
+-- skipSlowdown = true  →  bounce/collision path: let physics handle deceleration
+--                          naturally; don't overwrite AssemblyLinearVelocity.
+-- skipSlowdown = false →  normal path: coast to a stop, then freeze.
 
-local function applyTiredState()
+local function applyTiredState(skipSlowdown)
 	State.isTired = true
 	updateButtonText()
 
-	local startSpeed = State.speed
-	local startTime  = tick()
-
 	task.spawn(function()
-		-- Phase 1: coast to a stop
-		while tick() - startTime < CONFIG.TIRED_SLOWDOWN_TIME do
-			local t   = (tick() - startTime) / CONFIG.TIRED_SLOWDOWN_TIME
-			local spd = lerp(startSpeed, 0, t)
-			if State.hrp then
-				local dir = getDirection()
-				State.hrp.AssemblyLinearVelocity = Vector3.new(
-					dir.X * spd,
-					State.hrp.AssemblyLinearVelocity.Y,
-					dir.Z * spd
-				)
+		if not skipSlowdown then
+			-- Phase 1: coast to a stop over TIRED_SLOWDOWN_TIME seconds
+			local startSpeed = State.speed
+			local startTime  = tick()
+
+			while tick() - startTime < CONFIG.TIRED_SLOWDOWN_TIME do
+				local t   = (tick() - startTime) / CONFIG.TIRED_SLOWDOWN_TIME
+				local spd = lerp(startSpeed, 0, t)
+				if State.hrp then
+					local dir = getDirection()
+					State.hrp.AssemblyLinearVelocity = Vector3.new(
+						dir.X * spd,
+						State.hrp.AssemblyLinearVelocity.Y,
+						dir.Z * spd
+					)
+				end
+				task.wait()
 			end
-			task.wait()
+
+			-- Full stop
+			if State.hrp then
+				State.hrp.AssemblyLinearVelocity =
+					Vector3.new(0, State.hrp.AssemblyLinearVelocity.Y, 0)
+			end
+		else
+			-- Bounce path: physics + friction handle deceleration naturally.
+			-- We just wait the same window so the freeze timing stays consistent.
+			task.wait(CONFIG.TIRED_SLOWDOWN_TIME)
 		end
 
-		-- Full stop
-		if State.hrp then
-			State.hrp.AssemblyLinearVelocity =
-				Vector3.new(0, State.hrp.AssemblyLinearVelocity.Y, 0)
-		end
+		-- Reset hip height (applies to both paths)
 		if State.humanoid then
 			State.humanoid.HipHeight = State.defaultHipHeight
 		end
@@ -488,59 +491,79 @@ local function applyTiredState()
 	end)
 end
 
--- ── Knockback — direct proximity (THE FIX) ────────────────────────────────────
+-- ── Knockback loop ────────────────────────────────────────────────────────────
 --
---  OLD APPROACH (removed):
---    Every frame: spike hrp.Velocity × 12.5, wait a RenderStepped, restore.
---    Problems: the BodyVelocity constraint fights the spike immediately; the
---    spike window is too short for the physics engine to register a collision
---    impulse; .Velocity is deprecated and behaves inconsistently.
---
---  NEW APPROACH:
---    A Heartbeat scanner (started with the roll, stopped on stopRoll) checks
---    every model within KNOCKBACK_RADIUS studs and calls AssemblyLinearVelocity
---    directly on their HumanoidRootPart.  A per-model timestamp prevents
---    rapid-fire re-hits on the same target (KNOCKBACK_COOLDOWN seconds).
---
---    Force is proportional to current rolling speed so a full-charge roll
---    hits harder than a half-charge one.
---
+--  FIXES vs original:
+--  1. Use AssemblyLinearVelocity instead of the deprecated .Velocity property.
+--  2. Temporarily zero the BodyVelocity MaxForce during the spike so it cannot
+--     counteract the knockback impulse.  The MaxForce is restored immediately
+--     after the spike frames so normal rolling movement is unaffected.
+--  3. Hold the spike for TWO consecutive Stepped frames instead of one.
+--     This gives the physics engine a larger window to register the collision
+--     and transfer the impulse to nearby characters — the main reason knockback
+--     was unreliable before.
+--  4. stopKnockbackLoop() now also restores MaxForce in case the loop was
+--     interrupted mid-spike.
 
-local function applyDirectKnockback(targetHRP)
-	if not targetHRP or not State.hrp then return end
+local function startKnockbackLoop()
+	State.knockbackActive = true
 
-	local model = targetHRP.Parent
-	local now   = tick()
+	task.spawn(function()
+		while State.knockbackActive do
+			local hrp = State.hrp
+			local bv  = State.bodyVelocity
+			if hrp then
+				local vel = hrp.AssemblyLinearVelocity
 
-	-- Respect per-target cooldown
-	if knockedTargets[model] and now - knockedTargets[model] < CONFIG.KNOCKBACK_COOLDOWN then
-		return
+				-- Release BodyVelocity so it doesn't fight the spike
+				if bv then bv.MaxForce = Vector3.new(0, 0, 0) end
+
+				local spikeVel = Vector3.new(
+					vel.X * CONFIG.KNOCKBACK_MULTIPLIER,
+					CONFIG.KNOCKBACK_UP,
+					vel.Z * CONFIG.KNOCKBACK_MULTIPLIER
+				)
+
+				-- Hold spike across 2 physics steps for consistent collision detection
+				hrp.AssemblyLinearVelocity = spikeVel
+				RunService.Stepped:Wait()
+				if hrp and hrp.Parent then
+					hrp.AssemblyLinearVelocity = spikeVel
+				end
+				RunService.Stepped:Wait()
+
+				-- Restore character velocity and re-enable BodyVelocity driving
+				if hrp and hrp.Parent then
+					hrp.AssemblyLinearVelocity = vel
+				end
+				if bv and bv.Parent then
+					bv.MaxForce = Vector3.new(1e5, 0, 1e5)
+				end
+			end
+
+			-- Brief pause between spikes so BodyVelocity can reassert movement
+			RunService.Heartbeat:Wait()
+			RunService.Heartbeat:Wait()
+			RunService.Heartbeat:Wait()
+			-- Flag checked here — always AFTER the full spike+restore cycle
+		end
+	end)
+end
+
+local function stopKnockbackLoop()
+	State.knockbackActive = false
+	-- Restore MaxForce immediately in case the loop was mid-spike when we stopped
+	if State.bodyVelocity and State.bodyVelocity.Parent then
+		State.bodyVelocity.MaxForce = Vector3.new(1e5, 0, 1e5)
 	end
-	knockedTargets[model] = now
-
-	-- Direction: flat vector from us toward the target
-	local diff = targetHRP.Position - State.hrp.Position
-	local flat = Vector3.new(diff.X, 0, diff.Z)
-	if flat.Magnitude < 0.01 then
-		flat = getDirection()   -- fallback: push in our travel direction
-	end
-	flat = flat.Unit
-
-	-- Scale with rolling speed (0 → MIN_BOOST_POWER  ..  1 → MAX_BOOST_POWER)
-	local speedFactor = math.clamp(
-		(State.speed - CONFIG.MIN_BOOST_POWER) / (CONFIG.MAX_BOOST_POWER - CONFIG.MIN_BOOST_POWER),
-		0, 1
-	)
-	local force = lerp(CONFIG.KNOCKBACK_FORCE * 0.5, CONFIG.KNOCKBACK_FORCE, speedFactor)
-
-	targetHRP.AssemblyLinearVelocity = Vector3.new(
-		flat.X * force,
-		CONFIG.KNOCKBACK_UP,
-		flat.Z * force
-	)
 end
 
 -- ── Bounce away from killer ───────────────────────────────────────────────────
+--
+--  FIX: destroyBodyVelocity() is called before setting AssemblyLinearVelocity
+--  so there is nothing to counteract the bounce impulse.  The stopRoll()
+--  "collision" path now passes skipSlowdown=true to applyTiredState() so the
+--  slowdown loop never overwrites the bounce velocity.
 
 local function bounceAwayFrom(killerHRP)
 	if not State.hrp or not State.humanoid then return end
@@ -552,6 +575,7 @@ local function bounceAwayFrom(killerHRP)
 	end
 	flat = flat.Unit
 
+	-- Destroy BodyVelocity before applying bounce so they don't fight
 	destroyBodyVelocity()
 
 	State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
@@ -571,19 +595,7 @@ local function stopRoll(endType)
 	State.isRolling     = false
 	State.chargePercent = 0
 
-	-- ── Knockback cleanup ─────────────────────────────────────────────────────
-	knockedTargets = {}   -- reset per-target cooldown table
-
-	if State.knockbackConnection then
-		State.knockbackConnection:Disconnect()
-		State.knockbackConnection = nil
-	end
-
-	-- ── Physics cleanup ───────────────────────────────────────────────────────
-	if State.rollPhysicsConnection then
-		State.rollPhysicsConnection:Disconnect()
-		State.rollPhysicsConnection = nil
-	end
+	stopKnockbackLoop()
 
 	if State.rollUpdateConnection then
 		State.rollUpdateConnection:Disconnect()
@@ -606,18 +618,23 @@ local function stopRoll(endType)
 	end
 
 	if endType == "complete" then
+		-- Natural duration end: slowdown then tired freeze
 		destroyBodyVelocity()
-		applyTiredState()
+		applyTiredState(false)
 
 	elseif endType == "collision" then
-		-- bounceAwayFrom already destroyed BV; just apply tired on top
-		applyTiredState()
+		-- Killer hit: bounceAwayFrom already destroyed BV.
+		-- Pass skipSlowdown=true so applyTiredState does NOT overwrite the
+		-- bounce velocity — physics handles deceleration naturally.
+		applyTiredState(true)
 
 	elseif endType == "cancel" then
+		-- Manual cancel: endlag ramp-down, NOT tired
 		destroyBodyVelocity()
 		applyEndlag()
 
-	else -- "reset" / fallback
+	else
+		-- "reset" / fallback
 		destroyBodyVelocity()
 		if State.humanoid then State.humanoid.HipHeight = State.defaultHipHeight end
 		State.speed       = 0
@@ -649,17 +666,27 @@ local function startRoll()
 	State.isRolling     = true
 	State.rollStartTime = tick()
 
-	local boostPower   = calculateBoostPower(State.chargePercent)
-	State.rollDuration = calculateDuration(State.chargePercent)
-	State.speed        = boostPower
-	State.targetSpeed  = boostPower
+	local boostPower      = calculateBoostPower(State.chargePercent)
+	State.rollDuration    = calculateDuration(State.chargePercent)
+	State.speed           = boostPower
+	State.targetSpeed     = boostPower
 
 	createBodyVelocity()
 
-	-- ── Jump button / jump-height (RenderStepped) ─────────────────────────────
+	-- Movement & jump-height update loop
 	State.rollUpdateConnection = RunService.RenderStepped:Connect(function()
 		if not State.isRolling then return end
+
 		showJumpButton()
+
+		-- Update movement direction and speed
+		if State.bodyVelocity then
+			State.speed = math.max(State.speed - CONFIG.BOOST_DECAY, CONFIG.MIN_SPEED)
+			local dir = getDirection()
+			State.bodyVelocity.Velocity = dir * State.speed
+		end
+
+		-- Keep jump height consistent while rolling
 		local char = player.Character
 		if char then
 			local hum = char:FindFirstChildOfClass("Humanoid")
@@ -673,57 +700,6 @@ local function startRoll()
 		end
 	end)
 
-	-- ── Roll physics: speed decay + BodyVelocity drive (Heartbeat) ────────────
-	State.rollPhysicsConnection = RunService.Heartbeat:Connect(function()
-		if not State.isRolling then return end
-
-		local elapsed = tick() - State.rollStartTime
-		local t       = math.clamp(elapsed / State.rollDuration, 0, 1)
-
-		-- Smooth quadratic decay from targetSpeed → MIN_SPEED
-		State.speed = lerp(State.targetSpeed, CONFIG.MIN_SPEED, t * t)
-
-		-- Drive BodyVelocity along the camera's flat forward direction
-		if State.bodyVelocity then
-			State.bodyVelocity.Velocity = getDirection() * State.speed
-		end
-
-		-- Crouching: lower hip height as we go
-		if State.humanoid then
-			State.humanoid.HipHeight = lerp(
-				State.defaultHipHeight, -1,
-				math.clamp(elapsed / 0.25, 0, 1)
-			)
-		end
-
-		-- Natural duration end
-		if elapsed >= State.rollDuration then
-			stopRoll("complete")
-			startCooldown("complete")
-		end
-	end)
-
-	-- ── Proximity knockback scanner (Heartbeat) ────────────────────────────────
-	--  Checks ALL nearby models every physics step and pushes them away.
-	--  applyDirectKnockback handles per-target cooldowns internally.
-	State.knockbackConnection = RunService.Heartbeat:Connect(function()
-		if not State.isRolling or not State.hrp then return end
-
-		local myPos = State.hrp.Position
-
-		for _, model in ipairs(workspace:GetChildren()) do
-			if model:IsA("Model") and model ~= State.character then
-				local targetHRP = model:FindFirstChild("HumanoidRootPart")
-				if targetHRP then
-					local dist = (targetHRP.Position - myPos).Magnitude
-					if dist <= CONFIG.KNOCKBACK_RADIUS then
-						applyDirectKnockback(targetHRP)
-					end
-				end
-			end
-		end
-	end)
-
 	if State.spinSound then State.spinSound:Play() end
 
 	updateFOV()
@@ -731,6 +707,9 @@ local function startRoll()
 	if State.humanoid then
 		State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
+
+	-- Start knockback loop from the first frame of rolling
+	startKnockbackLoop()
 
 	-- Button text ticker
 	task.spawn(function()
@@ -758,86 +737,69 @@ local function startRoll()
 					end
 				end
 			end
-			task.wait()
+			task.wait(0.1)
+		end
+	end)
+
+	-- Natural roll duration timer
+	task.delay(State.rollDuration, function()
+		if State.isRolling then
+			stopRoll("complete")
+			startCooldown("complete")
 		end
 	end)
 end
 
--- ── Start charging ────────────────────────────────────────────────────────────
+-- ── Start charge ──────────────────────────────────────────────────────────────
 
 local function startCharge()
-	if State.onCooldown or State.isRolling or State.isCharging
-		or State.isEndlag or State.isTired then
-		return
-	end
+	if State.onCooldown or State.isCharging or State.isRolling
+		or State.isEndlag or State.isTired then return end
 	if not State.character or not State.humanoid or not State.hrp then return end
 
-	State.isCharging      = true
-	State.chargePercent   = 0
+	State.isCharging    = true
 	State.chargeStartTime = tick()
+	State.chargePercent = 0
 
-	State.humanoid.AutoRotate = false
-	State.humanoid.WalkSpeed  = 0
-	State.humanoid.JumpPower  = 0
-
-	if State.animTrack then State.animTrack:Play() end
+	if State.humanoid then
+		State.humanoid.WalkSpeed = 0
+		State.humanoid.HipHeight = -1
+	end
 
 	createHighlight()
-	updateFOV()
 	flickerHighlight()
-	updateButtonText()
+	updateFOV()
 
-	if State.spinSound then State.spinSound:Play() end
+	if State.animTrack then State.animTrack:Play() end
+	if State.spinSound  then State.spinSound:Play() end
 
-	-- Charge progress loop
+	-- Charge percentage update
 	task.spawn(function()
 		while State.isCharging do
 			local elapsed = tick() - State.chargeStartTime
-			State.chargePercent = math.clamp(elapsed / CONFIG.MAX_CHARGE_TIME, 0, 1)
+			State.chargePercent = math.min(elapsed / CONFIG.MAX_CHARGE_TIME, 1)
 			updateButtonText()
-			task.wait()
+			task.wait(0.05)
 		end
 	end)
+
+	updateButtonText()
 end
 
--- ── Sound setup ───────────────────────────────────────────────────────────────
-
-local function setupSounds()
-	-- Destroy old instances so we don't stack them on respawn
-	for _, key in ipairs({"spinSound","jumpSound","flickerSound","cancelSound"}) do
-		if State[key] then
-			State[key]:Destroy()
-			State[key] = nil
-		end
-	end
-
-	local soundRoot = State.hrp or workspace
-
-	local function makeSound(url, volume)
-		local filename = url:match("[^/]+$")
-		local s = Instance.new("Sound")
-		s.SoundId             = ensureFile(filename, url)
-		s.Volume              = volume or 1
-		s.RollOffMaxDistance  = 0
-		s.Parent              = soundRoot
-		return s
-	end
-
-	State.spinSound    = makeSound(CONFIG.SPINDASH_SOUND, 1)
-	State.jumpSound    = makeSound(CONFIG.JUMP_SOUND,     1)
-	State.flickerSound = makeSound(CONFIG.FLICKER_SOUND,  0.7)
-	State.cancelSound  = makeSound(CONFIG.CANCEL_SOUND,   1)
+local function stopCharge()
+	if not State.isCharging then return end
+	startRoll()
 end
 
--- ── Character setup ───────────────────────────────────────────────────────────
+-- ── Character init ────────────────────────────────────────────────────────────
 
-local function setupCharacter(character)
-	-- Disconnect any lingering connections from before respawn
-	if State.rollUpdateConnection  then State.rollUpdateConnection:Disconnect()  end
-	if State.rollPhysicsConnection then State.rollPhysicsConnection:Disconnect() end
-	if State.knockbackConnection   then State.knockbackConnection:Disconnect()   end
+local function initCharacter(character)
+	-- Clean up any previous roll state
+	if State.isRolling or State.isCharging then
+		stopRoll("reset")
+	end
 	destroyBodyVelocity()
-	knockedTargets = {}
+	removeHighlight()
 
 	State.character = character
 	State.humanoid  = character:WaitForChild("Humanoid")
@@ -848,152 +810,126 @@ local function setupCharacter(character)
 	State.defaultHipHeight = State.humanoid.HipHeight
 	State.defaultFov       = cam.FieldOfView
 
-	-- Load spin animation
+	State.isCharging    = false
+	State.isRolling     = false
+	State.isEndlag      = false
+	State.isTired       = false
+	State.knockbackActive = false
+	State.speed         = 0
+	State.targetSpeed   = 0
+	State.canJump       = true
+
+	-- Load animation
 	local anim = Instance.new("Animation")
 	anim.AnimationId = CONFIG.ANIM_ID
-	State.animTrack  = State.humanoid.Animator:LoadAnimation(anim)
-	State.animTrack.Priority = Enum.AnimationPriority.Action
-	State.animTrack.Looped   = true
+	State.animTrack = State.humanoid:LoadAnimation(anim)
 
-	setupSounds()
+	-- Load sounds (exploit-context custom assets)
+	local function loadSound(filename, url)
+		local snd = Instance.new("Sound")
+		snd.Parent = State.hrp
+		pcall(function()
+			snd.SoundId = ensureFile(filename, url)
+		end)
+		return snd
+	end
 
-	-- Reset volatile state
-	State.isCharging  = false
-	State.isRolling   = false
-	State.isEndlag    = false
-	State.isTired     = false
-	State.onCooldown  = false
-	State.speed       = 0
-	State.targetSpeed = 0
+	State.spinSound    = loadSound("spindash_sound.mp3",  CONFIG.SPINDASH_SOUND)
+	State.jumpSound    = loadSound("jump_sound.mp3",      CONFIG.JUMP_SOUND)
+	State.flickerSound = loadSound("flicker_sound.mp3",   CONFIG.FLICKER_SOUND)
+	State.cancelSound  = loadSound("cancel_sound.mp3",    CONFIG.CANCEL_SOUND)
+
+	updateButtonText()
 end
 
--- ── Input handling ────────────────────────────────────────────────────────────
+-- ── Input ─────────────────────────────────────────────────────────────────────
 
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	if gameProcessed then return end
-	if input.KeyCode ~= CONFIG.KEYBIND then return end
-
-	if State.isRolling then
-		if State.cancelSound then State.cancelSound:Play() end
-		stopRoll("cancel")
-		startCooldown("cancel")
-	else
+	if input.KeyCode == CONFIG.KEYBIND then
 		startCharge()
 	end
 end)
 
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
-	if input.KeyCode ~= CONFIG.KEYBIND then return end
-	if State.isCharging then
-		startRoll()
+UserInputService.InputEnded:Connect(function(input, _gameProcessed)
+	if input.KeyCode == CONFIG.KEYBIND then
+		if State.isCharging then
+			stopCharge()
+		elseif State.isRolling then
+			stopRoll("cancel")
+			startCooldown("cancel")
+		end
 	end
 end)
 
--- ── GUI setup ─────────────────────────────────────────────────────────────────
+-- ── Ability button wiring ─────────────────────────────────────────────────────
+-- Hooks into the EXISTING button that is already in the GUI; nothing is created
+-- or restyled here — only the press/release logic is connected.
 
-local function setupGui()
-	local old = playerGui:FindFirstChild("SpindashGui")
-	if old then old:Destroy() end
+local function wireAbilityButton()
+	-- Walk up to the button however the GUI is structured
+	local function findButton()
+		for _, gui in ipairs(playerGui:GetChildren()) do
+			local found = gui:FindFirstChild(CONFIG.BUTTON_NAME, true)
+			if found then return found end
+		end
+		return nil
+	end
 
-	local screenGui = Instance.new("ScreenGui")
-	screenGui.Name            = "SpindashGui"
-	screenGui.ResetOnSpawn    = false
-	screenGui.ZIndexBehavior  = Enum.ZIndexBehavior.Sibling
-	screenGui.Parent          = playerGui
+	local btn = findButton()
+	if not btn then
+		-- Retry once the GUI has loaded
+		task.delay(2, function()
+			btn = findButton()
+			if btn then
+				State.abilityButton = btn
+				updateButtonText()
+			end
+		end)
+		return
+	end
 
-	local btn = Instance.new("ImageButton")
-	btn.Name             = CONFIG.BUTTON_NAME
-	btn.Size             = UDim2.new(0, 80, 0, 80)
-	btn.Position         = UDim2.new(1, -100, 1, -180)
-	btn.AnchorPoint      = Vector2.new(0.5, 0.5)
-	btn.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-	btn.BorderSizePixel  = 0
-	btn.Image            = ensureFile(CONFIG.ICON_FILE, CONFIG.ICON_URL)
-	btn.Parent           = screenGui
-	State.abilityButton  = btn
+	State.abilityButton = btn
 
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, 14)
-	corner.Parent       = btn
+	-- Desktop: MouseButton1
+	btn.MouseButton1Down:Connect(startCharge)
+	btn.MouseButton1Up:Connect(function()
+		if State.isCharging then
+			stopCharge()
+		elseif State.isRolling then
+			stopRoll("cancel")
+			startCooldown("cancel")
+		end
+	end)
 
-	-- Label showing current state
-	local title = Instance.new("TextLabel")
-	title.Name                   = "Title"
-	title.Size                   = UDim2.new(1, 0, 0.45, 0)
-	title.Position               = UDim2.new(0, 0, 0.55, 0)
-	title.BackgroundTransparency = 1
-	title.Text                   = "Spindash (Hold)"
-	title.TextColor3             = Color3.fromRGB(255, 255, 255)
-	title.TextScaled             = true
-	title.Font                   = Enum.Font.GothamBold
-	title.Parent                 = btn
-
-	-- Cooldown darkening overlay
-	local overlay = Instance.new("Frame")
-	overlay.Name                   = "Cooldown"
-	overlay.Size                   = UDim2.new(1, 0, 1, 0)
-	overlay.BackgroundColor3       = Color3.new(0, 0, 0)
-	overlay.BackgroundTransparency = 0.5
-	overlay.Visible                = false
-	overlay.ZIndex                 = 2
-	overlay.Parent                 = btn
-
-	local oCorner = Instance.new("UICorner")
-	oCorner.CornerRadius = UDim.new(0, 14)
-	oCorner.Parent       = overlay
-
-	-- Countdown label inside overlay
-	local cdLabel = Instance.new("TextLabel")
-	cdLabel.Name                   = "CooldownLabel"
-	cdLabel.Size                   = UDim2.new(1, 0, 1, 0)
-	cdLabel.BackgroundTransparency = 1
-	cdLabel.Text                   = ""
-	cdLabel.TextColor3             = Color3.fromRGB(255, 255, 255)
-	cdLabel.TextScaled             = true
-	cdLabel.Font                   = Enum.Font.GothamBold
-	cdLabel.Visible                = false
-	cdLabel.ZIndex                 = 3
-	cdLabel.Parent                 = overlay
-
-	-- Mobile: hold to charge, release to launch, tap during roll to cancel
-	local holdActive = false
-
+	-- Mobile: Touch
 	btn.InputBegan:Connect(function(input)
-		if input.UserInputType == Enum.UserInputType.Touch
-			or input.UserInputType == Enum.UserInputType.MouseButton1
-		then
-			if State.isRolling then
-				if State.cancelSound then State.cancelSound:Play() end
+		if input.UserInputType == Enum.UserInputType.Touch then
+			startCharge()
+		end
+	end)
+	btn.InputEnded:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.Touch then
+			if State.isCharging then
+				stopCharge()
+			elseif State.isRolling then
 				stopRoll("cancel")
 				startCooldown("cancel")
-			else
-				holdActive = true
-				startCharge()
 			end
 		end
 	end)
 
-	btn.InputEnded:Connect(function(input)
-		if (input.UserInputType == Enum.UserInputType.Touch
-			or input.UserInputType == Enum.UserInputType.MouseButton1)
-			and holdActive
-		then
-			holdActive = false
-			if State.isCharging then
-				startRoll()
-			end
-		end
-	end)
+	updateButtonText()
 end
 
--- ── Initialization ────────────────────────────────────────────────────────────
+-- ── Bootstrap ─────────────────────────────────────────────────────────────────
 
-setupGui()
-
-local character = player.Character or player.CharacterAdded:Wait()
-setupCharacter(character)
-
-player.CharacterAdded:Connect(function(newCharacter)
-	task.wait()  -- let the character finish loading
-	setupCharacter(newCharacter)
+player.CharacterAdded:Connect(function(character)
+	initCharacter(character)
 end)
+
+if player.Character then
+	initCharacter(player.Character)
+end
+
+wireAbilityButton()
