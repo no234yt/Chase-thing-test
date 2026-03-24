@@ -54,7 +54,7 @@ local CONFIG = {
 	
 	KNOCKBACK_MULTIPLIER = 15,
 	KNOCKBACK_UP         = 80,
-	KNOCKBACK_MOVE       = 0.15,
+	KNOCKBACK_MOVE       = 0.1,
 
 	-- Bounce away when you hit a killer
 	BOUNCE_SPEED = 32,
