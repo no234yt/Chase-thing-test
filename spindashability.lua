@@ -52,9 +52,9 @@ local CONFIG = {
 	JUMP_HEIGHT   = 7.2,
 	JUMP_COOLDOWN = 1.5,
 	
-	KNOCKBACK_MULTIPLIER = 15,
+	KNOCKBACK_MULTIPLIER = 20,
 	KNOCKBACK_UP         = 80,
-	KNOCKBACK_MOVE       = 0.1,
+	KNOCKBACK_MOVE       = 0.15,
 
 	-- Bounce away when you hit a killer
 	BOUNCE_SPEED = 32,
