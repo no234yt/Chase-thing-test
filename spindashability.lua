@@ -24,8 +24,13 @@ local CONFIG = {
 	BASE_DURATION = 5,
 	MAX_DURATION  = 7,
 
+	-- Endlag: only used on CANCEL now
 	ENDLAG_DURATION        = 0.4,
 	ENDLAG_HIP_RETURN_TIME = 0.3,
+
+	-- Tired state: triggered on natural end and killer collision
+	TIRED_SLOWDOWN_TIME = 0.9,  -- seconds to coast to a stop
+	TIRED_DURATION      = 2.2,  -- seconds frozen after stopping
 
 	FOV_CHARGE = 10,
 	FOV_BOOST  = 5,
@@ -40,16 +45,20 @@ local CONFIG = {
 
 	KEYBIND = Enum.KeyCode.V,
 
-	COOLDOWN_COMPLETE    = 45,
-	COOLDOWN_CANCEL      = 25,
+	COOLDOWN_COMPLETE     = 45,
+	COOLDOWN_CANCEL       = 25,
 	COOLDOWN_INSUFFICIENT = 10,
 
-	JUMP_HEIGHT  = 7.2,
+	JUMP_HEIGHT   = 7.2,
 	JUMP_COOLDOWN = 1.5,
-
-	KNOCKBACK_MULTIPLIER = 15,
-	KNOCKBACK_UP         = 5,
+	
+	KNOCKBACK_MULTIPLIER = 12,
+	KNOCKBACK_UP         = 80,
 	KNOCKBACK_MOVE       = 0.1,
+
+	-- Bounce away when you hit a killer
+	BOUNCE_SPEED = 32,
+	BOUNCE_UP    = 28,
 
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND     = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
@@ -76,6 +85,7 @@ local State = {
 	isCharging = false,
 	isRolling  = false,
 	isEndlag   = false,
+	isTired    = false,
 	onCooldown = false,
 
 	chargePercent   = 0,
@@ -94,9 +104,10 @@ local State = {
 	flickerCoroutine     = nil,
 	cooldownCoroutine    = nil,
 	rollUpdateConnection = nil,
-	knockbackThread      = nil,
 
-	-- BodyVelocity used for roll movement (avoids fighting with fling spikes)
+	-- Flag-based knockback (NOT task.cancel — prevents self-fling on stop)
+	knockbackActive = false,
+
 	bodyVelocity = nil,
 
 	jumpBtn         = nil,
@@ -122,19 +133,18 @@ local function ensureFile(filename, url)
 	return getcustomasset(filename)
 end
 
-local function calculateBoostPower(chargePercent)
-	return lerp(CONFIG.MIN_BOOST_POWER, CONFIG.MAX_BOOST_POWER, chargePercent)
+local function calculateBoostPower(cp)
+	return lerp(CONFIG.MIN_BOOST_POWER, CONFIG.MAX_BOOST_POWER, cp)
 end
 
-local function calculateDuration(chargePercent)
-	return lerp(CONFIG.BASE_DURATION, CONFIG.MAX_DURATION, chargePercent)
+local function calculateDuration(cp)
+	return lerp(CONFIG.BASE_DURATION, CONFIG.MAX_DURATION, cp)
 end
 
--- ── BodyVelocity management ───────────────────────────────────────────────────
--- We use BodyVelocity instead of raw AssemblyLinearVelocity so that:
---   • Movement is a continuous constraint — it re-applies every physics step
---   • The fling spike can temporarily override .Velocity without being
---     permanently "won" by the Heartbeat overwrite that happened before
+-- ── BodyVelocity ──────────────────────────────────────────────────────────────
+-- Driving movement via BodyVelocity (a persistent constraint) means the
+-- knockback spike can temporarily override .Velocity without permanently
+-- breaking our movement — the constraint reasserts itself next physics step.
 
 local function createBodyVelocity()
 	if State.bodyVelocity then
@@ -142,12 +152,11 @@ local function createBodyVelocity()
 		State.bodyVelocity = nil
 	end
 	if not State.hrp then return end
-
 	local bv = Instance.new("BodyVelocity")
-	bv.Name      = "SpindashBV"
-	bv.MaxForce  = Vector3.new(1e5, 0, 1e5) -- horizontal only; gravity/jump still work
-	bv.Velocity  = Vector3.new(0, 0, 0)
-	bv.Parent    = State.hrp
+	bv.Name     = "SpindashBV"
+	bv.MaxForce = Vector3.new(1e5, 0, 1e5)
+	bv.Velocity = Vector3.new(0, 0, 0)
+	bv.Parent   = State.hrp
 	State.bodyVelocity = bv
 end
 
@@ -367,7 +376,10 @@ local function updateButtonText()
 	local titleLabel = State.abilityButton:FindFirstChild("Title")
 	if not titleLabel then return end
 
-	if State.isRolling then
+	if State.isTired then
+		titleLabel.Text       = "Exhausted..."
+		titleLabel.TextColor3 = Color3.fromRGB(150, 150, 255)
+	elseif State.isRolling then
 		local remainingTime = State.rollDuration - (tick() - State.rollStartTime)
 		titleLabel.Text       = string.format("Cancel [%.1fs]", math.max(0, remainingTime))
 		titleLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
@@ -383,7 +395,7 @@ local function updateButtonText()
 	end
 end
 
--- ── Endlag ────────────────────────────────────────────────────────────────────
+-- ── Endlag — cancel only ──────────────────────────────────────────────────────
 
 local function applyEndlag()
 	State.isEndlag = true
@@ -419,63 +431,137 @@ local function applyEndlag()
 	end)
 end
 
--- ── Knockback loop ────────────────────────────────────────────────────────────
+-- ── Tired state — natural/collision end ──────────────────────────────────────
+-- Phase 1: coast to a stop over TIRED_SLOWDOWN_TIME seconds.
+-- Phase 2: frozen (WalkSpeed = 0) for TIRED_DURATION seconds.
+
+local function applyTiredState()
+	State.isTired = true
+	updateButtonText()
+
+	local startSpeed = State.speed
+	local startTime  = tick()
+
+	task.spawn(function()
+		-- Slowdown phase
+		while tick() - startTime < CONFIG.TIRED_SLOWDOWN_TIME do
+			local t   = (tick() - startTime) / CONFIG.TIRED_SLOWDOWN_TIME
+			local spd = lerp(startSpeed, 0, t)
+			if State.hrp then
+				local dir = getDirection()
+				State.hrp.AssemblyLinearVelocity = Vector3.new(
+					dir.X * spd,
+					State.hrp.AssemblyLinearVelocity.Y,
+					dir.Z * spd
+				)
+			end
+			task.wait()
+		end
+
+		-- Full stop
+		if State.hrp then
+			State.hrp.AssemblyLinearVelocity =
+				Vector3.new(0, State.hrp.AssemblyLinearVelocity.Y, 0)
+		end
+		if State.humanoid then
+			State.humanoid.HipHeight = State.defaultHipHeight
+		end
+
+		-- Frozen phase
+		if State.humanoid then
+			State.humanoid.WalkSpeed = 0
+			State.humanoid.JumpPower = 0
+		end
+
+		task.wait(CONFIG.TIRED_DURATION)
+
+		if State.humanoid then
+			State.humanoid.WalkSpeed = State.defaultWalkSpeed
+			State.humanoid.JumpPower = State.defaultJumpPower
+		end
+		State.isTired = false
+		updateButtonText()
+	end)
+end
+
+-- ── Knockback loop — flag-based, NO task.cancel ───────────────────────────────
+--
+--  THE FIX FOR SELF-FLING:
+--  The old code used task.cancel to stop the loop. If cancel fired between the
+--  spike line and the restore line, the huge velocity was left on the character.
+--  Now we use a boolean flag. The loop checks it only AFTER the restore step,
+--  so the spike is always paired with its restore before the loop can exit.
+--
 
 local function startKnockbackLoop()
-	if State.knockbackThread then
-		task.cancel(State.knockbackThread)
-		State.knockbackThread = nil
-	end
-
+	State.knockbackActive = true
 	local movel = CONFIG.KNOCKBACK_MOVE
 
-	State.knockbackThread = task.spawn(function()
-		while State.isRolling do
+	task.spawn(function()
+		while State.knockbackActive do
 			local hrp = State.hrp
 			if hrp then
 				local vel = hrp.AssemblyLinearVelocity
 
-				-- Spike: our character physically slams into nearby players
+				-- Spike: causes physics-engine collision push on nearby players
 				hrp.Velocity = vel * CONFIG.KNOCKBACK_MULTIPLIER
 					+ Vector3.new(0, CONFIG.KNOCKBACK_UP, 0)
 
 				RunService.RenderStepped:Wait()
 
-				-- Restore our velocity — BodyVelocity will take over again next step
+				-- Restore — always runs, even if knockbackActive was set to false above
 				hrp.Velocity = vel
 
 				RunService.Stepped:Wait()
 
-				-- Y oscillation keeps the effect continuous (same pattern as fling example)
 				hrp.Velocity = vel + Vector3.new(0, movel, 0)
 				movel = -movel
 			end
 
 			RunService.Heartbeat:Wait()
+			-- Flag checked here only — after the full spike+restore cycle
 		end
 	end)
 end
 
 local function stopKnockbackLoop()
-	if State.knockbackThread then
-		task.cancel(State.knockbackThread)
-		State.knockbackThread = nil
+	State.knockbackActive = false
+	-- No task.cancel — loop exits cleanly after finishing its current cycle
+end
+
+-- ── Bounce away from killer ───────────────────────────────────────────────────
+
+local function bounceAwayFrom(killerHRP)
+	if not State.hrp or not State.humanoid then return end
+
+	local diff = State.hrp.Position - killerHRP.Position
+	local flat = Vector3.new(diff.X, 0, diff.Z)
+	if flat.Magnitude < 0.1 then
+		flat = -getDirection() -- fallback: bounce back the way we came
 	end
+	flat = flat.Unit
+
+	-- Destroy BodyVelocity before applying bounce so they don't fight
+	destroyBodyVelocity()
+
+	State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	State.hrp.AssemblyLinearVelocity = Vector3.new(
+		flat.X * CONFIG.BOUNCE_SPEED,
+		CONFIG.BOUNCE_UP,
+		flat.Z * CONFIG.BOUNCE_SPEED
+	)
 end
 
 -- ── Stop roll ─────────────────────────────────────────────────────────────────
 
 local function stopRoll(endType)
 	endType = endType or "complete"
-	stopKnockbackLoop()
-	destroyBodyVelocity() 
 
 	State.isCharging    = false
 	State.isRolling     = false
 	State.chargePercent = 0
 
-	stopKnockbackLoop()
-	destroyBodyVelocity() 
+	stopKnockbackLoop() -- safe flag-based stop
 
 	if State.rollUpdateConnection then
 		State.rollUpdateConnection:Disconnect()
@@ -495,24 +581,32 @@ local function stopRoll(endType)
 		State.humanoid.WalkSpeed  = State.defaultWalkSpeed
 		State.humanoid.JumpPower  = State.defaultJumpPower
 		State.humanoid.AutoRotate = true
+	end
 
-		if endType == "complete" or endType == "collision" then
-			applyEndlag()
-			stopKnockbackLoop()
-			destroyBodyVelocity() 
-		else
-			State.humanoid.HipHeight = State.defaultHipHeight
-			State.speed       = 0
-			State.targetSpeed = 0
-		end
+	if endType == "complete" then
+		-- Natural duration end: slowdown then tired freeze
+		destroyBodyVelocity()
+		applyTiredState()
+
+	elseif endType == "collision" then
+		-- Killer hit: bounceAwayFrom already destroyed BV before calling us
+		-- Just apply the tired state on top of the bounce
+		applyTiredState()
+
+	elseif endType == "cancel" then
+		-- Manual cancel: endlag (brief speed ramp-down), NOT tired
+		destroyBodyVelocity()
+		applyEndlag()
+
 	else
+		-- "reset" / fallback
+		destroyBodyVelocity()
+		if State.humanoid then State.humanoid.HipHeight = State.defaultHipHeight end
 		State.speed       = 0
 		State.targetSpeed = 0
 	end
 
 	removeHighlight()
-	stopKnockbackLoop()
-	destroyBodyVelocity() 
 	cam.FieldOfView = State.defaultFov
 	updateButtonText()
 end
@@ -542,7 +636,6 @@ local function startRoll()
 	State.speed           = boostPower
 	State.targetSpeed     = boostPower
 
-	-- Create the BodyVelocity constraint that will drive movement
 	createBodyVelocity()
 
 	State.rollUpdateConnection = RunService.RenderStepped:Connect(function()
@@ -570,10 +663,10 @@ local function startRoll()
 		State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
 
-	-- Start knockback permanently for entire roll
+	-- Knockback on from the first frame of rolling
 	startKnockbackLoop()
 
-	-- Button text updater
+	-- Button text
 	task.spawn(function()
 		while State.isRolling do
 			updateButtonText()
@@ -581,7 +674,7 @@ local function startRoll()
 		end
 	end)
 
-	-- Killer collision check
+	-- Killer proximity: bounce away then enter tired state
 	task.spawn(function()
 		while State.isRolling do
 			for _, v in pairs(workspace:GetChildren()) do
@@ -589,9 +682,11 @@ local function startRoll()
 					and ReplicatedStorage.GameAssets.Teams.Killer:FindFirstChild(v.Name)
 					and v:FindFirstChild("HumanoidRootPart")
 				then
-					local distance = (v.HumanoidRootPart.Position - State.hrp.Position).Magnitude
+					local killerHRP = v.HumanoidRootPart
+					local distance  = (killerHRP.Position - State.hrp.Position).Magnitude
 					if distance < 6 then
-						stopRoll("collision")
+						bounceAwayFrom(killerHRP) -- destroys BV and applies bounce velocity
+						stopRoll("collision")     -- tired state, no BV destroy needed again
 						startCooldown("complete")
 						break
 					end
@@ -618,7 +713,7 @@ end
 -- ── Charge ────────────────────────────────────────────────────────────────────
 
 local function startCharge()
-	if State.isCharging or State.isRolling or State.isEndlag
+	if State.isCharging or State.isRolling or State.isEndlag or State.isTired
 		or not State.humanoid or State.onCooldown
 	then return end
 
@@ -666,8 +761,6 @@ end
 local function cancelRoll()
 	if State.isRolling then
 		if State.cancelSound then State.cancelSound:Play() end
-		stopKnockbackLoop()
-		destroyBodyVelocity() 
 		stopRoll("cancel")
 		startCooldown("cancel")
 	end
@@ -763,17 +856,10 @@ local function setupCharacter()
 		end
 	end)
 
-	stopRoll("cancel")
+	stopRoll("reset")
 end
 
--- ── Heartbeat ─────────────────────────────────────────────────────────────────
---
---  Movement is now driven by updating BodyVelocity.Velocity each frame
---  instead of setting AssemblyLinearVelocity directly.
---  This means the fling spike (which briefly overrides .Velocity) is
---  automatically corrected by BodyVelocity the next physics step,
---  so our movement is never permanently broken by the knockback.
---
+-- ── Heartbeat — BodyVelocity-based movement ───────────────────────────────────
 
 RunService.Heartbeat:Connect(function(dt)
 	if not State.humanoid or not State.hrp then return end
@@ -789,14 +875,10 @@ RunService.Heartbeat:Connect(function(dt)
 		State.speed = lerp(State.speed, State.targetSpeed,
 			math.clamp(dt * CONFIG.BOOST_ACCEL, 0, 1))
 
-		-- Update BodyVelocity (not AssemblyLinearVelocity) — this is the key change.
-		-- BodyVelocity reasserts itself every physics step so fling spikes can't break it.
 		if State.bodyVelocity then
 			local dir = getDirection()
 			State.bodyVelocity.Velocity = Vector3.new(
-				dir.X * State.speed,
-				0,
-				dir.Z * State.speed
+				dir.X * State.speed, 0, dir.Z * State.speed
 			)
 		end
 
@@ -832,7 +914,7 @@ local function createAbilityButton()
 
 	btn.MouseButton1Down:Connect(function()
 		if not State.isCharging and not State.isRolling
-			and not State.isEndlag and not State.onCooldown
+			and not State.isEndlag and not State.isTired and not State.onCooldown
 		then
 			startCharge()
 		end
