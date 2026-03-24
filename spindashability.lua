@@ -47,9 +47,9 @@ local CONFIG = {
 	JUMP_HEIGHT = 7.2,
 	JUMP_COOLDOWN = 1.5,
 
-	KNOCKBACK_RANGE = 20,
-	KNOCKBACK_FORCE = 350,
-	KNOCKBACK_UP    = 155,
+	KNOCKBACK_MULTIPLIER = 5000,
+	KNOCKBACK_UP         = 8000,
+	KNOCKBACK_MOVE       = 0.1,
 
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND     = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
@@ -94,12 +94,16 @@ local State = {
 	flickerCoroutine     = nil,
 	cooldownCoroutine    = nil,
 	rollUpdateConnection = nil,
-	knockbackConnection  = nil,   -- NEW: holds the Heartbeat connection for knockback
+
+	-- knockback thread handle
+	knockbackThread = nil,
 
 	jumpBtn         = nil,
 	jumpConnections = {},
 	canJump         = true,
 }
+
+-- ── Helpers ───────────────────────────────────────────────────────────────────
 
 local function lerp(a, b, t)
 	return a + (b - a) * t
@@ -124,6 +128,8 @@ end
 local function calculateDuration(chargePercent)
 	return lerp(CONFIG.BASE_DURATION, CONFIG.MAX_DURATION, chargePercent)
 end
+
+-- ── Jump button ───────────────────────────────────────────────────────────────
 
 local function findJumpBtn()
 	local main = playerGui:FindFirstChild("MainGui")
@@ -214,6 +220,8 @@ local function hideJumpButton()
 	if btn then btn.Visible = false end
 end
 
+-- ── Cooldown ──────────────────────────────────────────────────────────────────
+
 function startCooldown(cooldownType)
 	if State.cooldownCoroutine then
 		task.cancel(State.cooldownCoroutine)
@@ -250,6 +258,8 @@ function startCooldown(cooldownType)
 	end)
 end
 
+-- ── Highlight ─────────────────────────────────────────────────────────────────
+
 local function removeHighlight()
 	if State.highlight then
 		State.highlight:Destroy()
@@ -274,7 +284,7 @@ local function flickerHighlight()
 	State.flickerCoroutine = task.spawn(function()
 		while State.isCharging and State.highlight and State.flickerSound do
 			local flickerInterval = lerp(0.25, 0.08, State.chargePercent)
-			local pitch            = lerp(CONFIG.FLICKER_BASE_PITCH, CONFIG.FLICKER_MAX_PITCH, State.chargePercent)
+			local pitch           = lerp(CONFIG.FLICKER_BASE_PITCH, CONFIG.FLICKER_MAX_PITCH, State.chargePercent)
 
 			State.highlight.FillTransparency = CONFIG.FLICKER_SNAP_TRANSPARENCY
 			State.flickerSound.PlaybackSpeed = pitch
@@ -294,6 +304,7 @@ local function flickerHighlight()
 			if State.highlight then
 				State.highlight.FillTransparency = CONFIG.FLICKER_MAX_TRANSPARENCY
 			end
+
 			task.wait(math.max(0, flickerInterval - CONFIG.FLICKER_FADE_TIME))
 		end
 
@@ -303,6 +314,8 @@ local function flickerHighlight()
 		end
 	end)
 end
+
+-- ── FOV ───────────────────────────────────────────────────────────────────────
 
 local function updateFOV()
 	task.spawn(function()
@@ -318,7 +331,9 @@ local function updateFOV()
 	end)
 end
 
-function updateButtonText()
+-- ── Button text ───────────────────────────────────────────────────────────────
+
+local function updateButtonText()
 	if not State.abilityButton then return end
 	local titleLabel = State.abilityButton:FindFirstChild("Title")
 	if not titleLabel then return end
@@ -338,6 +353,8 @@ function updateButtonText()
 		titleLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
 	end
 end
+
+-- ── Endlag ────────────────────────────────────────────────────────────────────
 
 local function applyEndlag()
 	State.isEndlag = true
@@ -373,67 +390,54 @@ local function applyEndlag()
 	end)
 end
 
--- ── Knockback: runs every Heartbeat using .Velocity like the fling example ───
-local function startKnockback()
-	-- Disconnect any previous connection first
-	if State.knockbackConnection then
-		State.knockbackConnection:Disconnect()
-		State.knockbackConnection = nil
+-- ── Knockback (fling-style on local HRP) ─────────────────────────────────────
+--
+--  Works the same way as the fling example you provided:
+--  rapidly spike OUR OWN velocity so Roblox's physics engine
+--  collision-resolves nearby players/parts away from us.
+--  Runs permanently every Heartbeat for the entire roll duration.
+--
+local function startKnockbackLoop()
+	-- Cancel any existing thread first
+	if State.knockbackThread then
+		task.cancel(State.knockbackThread)
+		State.knockbackThread = nil
 	end
 
-	State.knockbackConnection = RunService.Heartbeat:Connect(function()
-		-- Stop and clean up the moment rolling ends
-		if not State.isRolling then
-			if State.knockbackConnection then
-				State.knockbackConnection:Disconnect()
-				State.knockbackConnection = nil
-			end
-			return
-		end
+	local movel = CONFIG.KNOCKBACK_MOVE
 
-		if not State.hrp then return end
+	State.knockbackThread = task.spawn(function()
+		while State.isRolling do
+			local hrp = State.hrp
+			if hrp then
+				-- Step 1: capture real roll velocity
+				local vel = hrp.AssemblyLinearVelocity
 
-		for _, v in ipairs(Players:GetPlayers()) do
-			-- Skip self
-			if v == player then continue end
-
-			local char = v.Character
-			if not char then continue end
-
-			local targetHrp = char:FindFirstChild("HumanoidRootPart")
-			if not targetHrp then continue end
-
-			local diff = targetHrp.Position - State.hrp.Position
-			local dist = diff.Magnitude
-
-			if dist < CONFIG.KNOCKBACK_RANGE and dist > 0.1 then
-				-- Flat direction away from us
-				local flatDir = Vector3.new(diff.X, 0, diff.Z)
-				if flatDir.Magnitude < 0.01 then continue end
-				flatDir = flatDir.Unit
-
-				-- Re-apply every Heartbeat so the engine can't cancel it out,
-				-- same principle as the fling script
-				local vel = targetHrp.Velocity
-				targetHrp.Velocity = flatDir * CONFIG.KNOCKBACK_FORCE
+				-- Step 2: spike — this is what physically collides into nearby players
+				hrp.Velocity = vel * CONFIG.KNOCKBACK_MULTIPLIER
 					+ Vector3.new(0, CONFIG.KNOCKBACK_UP, 0)
 
-				-- Next RenderStepped: restore base so they don't fly forever,
-				-- but they've already been pushed outward
 				RunService.RenderStepped:Wait()
-				if targetHrp and targetHrp.Parent then
-					targetHrp.Velocity = flatDir * (CONFIG.KNOCKBACK_FORCE * 0.3)
-						+ Vector3.new(0, CONFIG.KNOCKBACK_UP * 0.4, 0)
-				end
+
+				-- Step 3: restore so our own movement isn't broken
+				hrp.Velocity = vel
+
+				RunService.Stepped:Wait()
+
+				-- Step 4: small Y oscillation (same pattern as fling example)
+				hrp.Velocity = vel + Vector3.new(0, movel, 0)
+				movel = -movel
 			end
+
+			RunService.Heartbeat:Wait()
 		end
 	end)
 end
 
-local function stopKnockback()
-	if State.knockbackConnection then
-		State.knockbackConnection:Disconnect()
-		State.knockbackConnection = nil
+local function stopKnockbackLoop()
+	if State.knockbackThread then
+		task.cancel(State.knockbackThread)
+		State.knockbackThread = nil
 	end
 end
 
@@ -447,7 +451,7 @@ local function stopRoll(endType)
 	State.chargePercent = 0
 
 	-- Stop knockback immediately when roll ends
-	stopKnockback()
+	stopKnockbackLoop()
 
 	if State.rollUpdateConnection then
 		State.rollUpdateConnection:Disconnect()
@@ -505,13 +509,10 @@ local function startRoll()
 	State.isRolling     = true
 	State.rollStartTime = tick()
 
-	local boostPower       = calculateBoostPower(State.chargePercent)
-	State.rollDuration     = calculateDuration(State.chargePercent)
-	State.speed            = boostPower
-	State.targetSpeed      = boostPower
-
-	-- Start knockback immediately — runs every Heartbeat for entire roll
-	startKnockback()
+	local boostPower      = calculateBoostPower(State.chargePercent)
+	State.rollDuration    = calculateDuration(State.chargePercent)
+	State.speed           = boostPower
+	State.targetSpeed     = boostPower
 
 	State.rollUpdateConnection = RunService.RenderStepped:Connect(function()
 		if State.isRolling then
@@ -538,6 +539,10 @@ local function startRoll()
 		State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
 
+	-- Start permanent knockback for the whole roll
+	startKnockbackLoop()
+
+	-- Button text updater
 	task.spawn(function()
 		while State.isRolling do
 			updateButtonText()
@@ -545,6 +550,7 @@ local function startRoll()
 		end
 	end)
 
+	-- Killer collision check
 	task.spawn(function()
 		while State.isRolling do
 			for _, v in pairs(workspace:GetChildren()) do
@@ -564,6 +570,7 @@ local function startRoll()
 		end
 	end)
 
+	-- Duration timer
 	task.spawn(function()
 		while State.isRolling do
 			local elapsed = tick() - State.rollStartTime
@@ -703,8 +710,8 @@ local function setupCharacter()
 	State.hrp       = State.character:WaitForChild("HumanoidRootPart")
 
 	local anim = Instance.new("Animation")
-	anim.AnimationId       = CONFIG.ANIM_ID
-	State.animTrack        = State.humanoid:LoadAnimation(anim)
+	anim.AnimationId      = CONFIG.ANIM_ID
+	State.animTrack       = State.humanoid:LoadAnimation(anim)
 	State.animTrack.Looped = true
 
 	setupSounds()
@@ -726,7 +733,7 @@ local function setupCharacter()
 	stopRoll("cancel")
 end
 
--- ── Heartbeat ─────────────────────────────────────────────────────────────────
+-- ── Heartbeat (movement) ──────────────────────────────────────────────────────
 
 RunService.Heartbeat:Connect(function(dt)
 	if not State.humanoid or not State.hrp then return end
