@@ -49,7 +49,7 @@ local CONFIG = {
 
 	KNOCKBACK_MULTIPLIER = 15,
 	KNOCKBACK_UP         = 10,
-	KNOCKBACK_MOVE       = 0.1,
+	KNOCKBACK_MOVE       = 0.15,
 
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND     = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
@@ -495,6 +495,8 @@ local function stopRoll(endType)
 
 		if endType == "complete" or endType == "collision" then
 			applyEndlag()
+			stopKnockbackLoop()
+			destroyBodyVelocity() 
 		else
 			State.humanoid.HipHeight = State.defaultHipHeight
 			State.speed       = 0
