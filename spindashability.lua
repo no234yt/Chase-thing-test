@@ -47,9 +47,9 @@ local CONFIG = {
 	JUMP_HEIGHT  = 7.2,
 	JUMP_COOLDOWN = 1.5,
 
-	KNOCKBACK_MULTIPLIER = 150,
+	KNOCKBACK_MULTIPLIER = 50,
 	KNOCKBACK_UP         = 50,
-	KNOCKBACK_MOVE       = 0.1,
+	KNOCKBACK_MOVE       = 0.15,
 
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
 	JUMP_SOUND     = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/jump.mp3",
@@ -420,13 +420,6 @@ local function applyEndlag()
 end
 
 -- ── Knockback loop ────────────────────────────────────────────────────────────
---
---  Fling-style: spike OUR OWN velocity for one physics sub-step so Roblox's
---  collision resolver throws nearby players/parts away, then restore.
---  Because movement is now done via BodyVelocity (a persistent constraint),
---  it automatically re-asserts the roll velocity next physics step —
---  the spike no longer permanently breaks our movement.
---
 
 local function startKnockbackLoop()
 	if State.knockbackThread then
