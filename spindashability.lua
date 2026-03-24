@@ -467,13 +467,12 @@ end
 
 local function stopRoll(endType)
 	endType = endType or "complete"
+	stopKnockbackLoop()
+	destroyBodyVelocity() 
 
 	State.isCharging    = false
 	State.isRolling     = false
 	State.chargePercent = 0
-
-	stopKnockbackLoop()
-	destroyBodyVelocity() -- remove movement constraint before endlag takes over
 
 	if State.rollUpdateConnection then
 		State.rollUpdateConnection:Disconnect()
@@ -660,6 +659,8 @@ end
 local function cancelRoll()
 	if State.isRolling then
 		if State.cancelSound then State.cancelSound:Play() end
+		stopKnockbackLoop()
+		destroyBodyVelocity() 
 		stopRoll("cancel")
 		startCooldown("cancel")
 	end
