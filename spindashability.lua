@@ -51,9 +51,9 @@ local CONFIG = {
 
 	JUMP_HEIGHT   = 7.2,
 	JUMP_COOLDOWN = 1.5,
-	
-	KNOCKBACK_MULTIPLIER = 12.5,
-	KNOCKBACK_UP         = 30,
+
+	KNOCKBACK_MULTIPLIER = 15,
+	KNOCKBACK_UP         = 25,
 	KNOCKBACK_MOVE       = 0.1,
 
 	-- Bounce away when you hit a killer
@@ -429,8 +429,6 @@ local function applyEndlag()
 end
 
 -- ── Tired state — natural/collision end ──────────────────────────────────────
--- Phase 1: coast to a stop over TIRED_SLOWDOWN_TIME seconds.
--- Phase 2: frozen (WalkSpeed = 0) for TIRED_DURATION seconds.
 
 local function applyTiredState()
 	State.isTired = true
@@ -483,65 +481,83 @@ end
 
 -- ── Knockback loop ────────────────────────────────────────────────────────────
 --
---  FIXED: The old code used hrp.Velocity (deprecated, unreliable) and tried to
---  push OTHER players from a LocalScript — which doesn't replicate.
+--  Rebuilt using the fling blueprint as a foundation:
 --
---  This version pushes the LOCAL character's HRP using AssemblyLinearVelocity
---  every Heartbeat tick while rolling. It preserves the current Y velocity
---  so gravity / jumping isn't disrupted, and adds a small upward pulse so the
---  knockback is visible and consistent rather than fighting the BodyVelocity.
+--  THE ROOT CAUSE OF INCONSISTENCY:
+--    The old loop used hrp.Velocity (deprecated) mixed with AssemblyLinearVelocity,
+--    and the BodyVelocity constraint (MaxForce 1e5 on XZ) was actively fighting the
+--    spike every single Heartbeat. The BV would overwrite the spike before the physics
+--    engine ever processed it against nearby players, making knockback a coin flip.
 --
---  Because this is a LocalScript, knockback on OTHER characters must go through
---  a RemoteEvent if your game has one. This script handles the self-side only.
+--  THE FIX:
+--    1. Snapshot AssemblyLinearVelocity consistently (no .Velocity mixing).
+--    2. ZERO the BV MaxForce before the spike so the constraint cannot override it.
+--    3. Write the spike with AssemblyLinearVelocity (same API throughout).
+--    4. Wait one RenderStepped — physics engine now processes the spike.
+--    5. Restore AssemblyLinearVelocity and re-enable BV MaxForce.
+--    6. Wait one Stepped, apply the gentle oscillating lift (movel) from the blueprint.
+--    7. Wait one Heartbeat, THEN check the flag — spike+restore always pairs cleanly.
 --
 
 local function startKnockbackLoop()
 	State.knockbackActive = true
+	local movel = CONFIG.KNOCKBACK_MOVE
 
 	task.spawn(function()
 		while State.knockbackActive do
 			local hrp = State.hrp
-			if hrp and State.isRolling then
-				local dir     = getDirection()
-				local currentY = hrp.AssemblyLinearVelocity.Y
+			local bv  = State.bodyVelocity
 
-				-- Apply the rolling knockback velocity directly; this is consistent
-				-- because AssemblyLinearVelocity is the authoritative way to set
-				-- velocity on network-owned parts in modern Roblox.
-				hrp.AssemblyLinearVelocity = Vector3.new(
-					dir.X * State.speed,
-					currentY + CONFIG.KNOCKBACK_MOVE, -- tiny upward pulse keeps feet off ground briefly
-					dir.Z * State.speed
-				)
+			if hrp then
+				-- Snapshot real current velocity
+				local vel = hrp.AssemblyLinearVelocity
 
-				-- Sync the BodyVelocity target to match so the two don't fight
-				if State.bodyVelocity then
-					State.bodyVelocity.Velocity = Vector3.new(
-						dir.X * State.speed,
-						0,
-						dir.Z * State.speed
-					)
-				end
+				-- Silence the BV so it cannot override the spike
+				if bv then bv.MaxForce = Vector3.new(0, 0, 0) end
+
+				-- Spike — large velocity causes physics collision push on nearby players
+				hrp.AssemblyLinearVelocity = vel * CONFIG.KNOCKBACK_MULTIPLIER
+					+ Vector3.new(0, CONFIG.KNOCKBACK_UP, 0)
+
+				RunService.RenderStepped:Wait()
+
+				-- Restore — always runs before flag is checked
+				hrp.AssemblyLinearVelocity = vel
+
+				-- Re-engage the BV constraint
+				if bv then bv.MaxForce = Vector3.new(1e5, 0, 1e5) end
+
+				RunService.Stepped:Wait()
+
+				hrp.AssemblyLinearVelocity = vel + Vector3.new(0, movel, 0)
+				movel = -movel
 			end
 
 			RunService.Heartbeat:Wait()
+			-- Flag checked here only — after the full spike+restore cycle
 		end
 	end)
 end
 
 local function stopKnockbackLoop()
 	State.knockbackActive = false
+	-- No task.cancel — loop exits cleanly after finishing its current cycle
 end
 
 -- ── Bounce away from killer ───────────────────────────────────────────────────
 --
---  FIXED: Previously the bounce set AssemblyLinearVelocity immediately after
---  ChangeState(Jumping), but Roblox's physics step was overwriting it on the
---  same frame. Now we:
---    1. Destroy BodyVelocity so it can't fight the bounce.
---    2. Call ChangeState(Jumping) to release the ground constraint.
---    3. Wait one Heartbeat so the state transition settles.
---    4. Apply the velocity — now it sticks reliably.
+--  THE ROOT CAUSE OF BOUNCE NOT WORKING:
+--    The old code called ChangeState(Jumping) which is unreliable — the humanoid
+--    state machine often re-evaluates immediately and clamps Y velocity back to 0,
+--    especially when the character is grounded. AssemblyLinearVelocity was then
+--    written, but with no constraint holding it, the humanoid walked right through it.
+--
+--  THE FIX:
+--    Create a short-lived BodyVelocity with full 3-axis MaxForce (Y included).
+--    This physically overrides the humanoid's landing correction for ~3 physics steps,
+--    which is enough to clear the ground and get airborne. Then destroy it so
+--    normal movement resumes. AssemblyLinearVelocity is also set directly for the
+--    instant impulse frame.
 --
 
 local function bounceAwayFrom(killerHRP)
@@ -550,26 +566,39 @@ local function bounceAwayFrom(killerHRP)
 	local diff = State.hrp.Position - killerHRP.Position
 	local flat = Vector3.new(diff.X, 0, diff.Z)
 	if flat.Magnitude < 0.1 then
-		flat = -getDirection() -- fallback: bounce back the way we came
+		flat = -getDirection()
 	end
 	flat = flat.Unit
 
-	-- Destroy BodyVelocity FIRST so it can't fight the bounce impulse
+	-- Destroy the spindash BodyVelocity so it doesn't interfere
 	destroyBodyVelocity()
 
-	-- Release ground constraint so the upward velocity actually launches us
-	State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+	local bounceVelocity = Vector3.new(
+		flat.X * CONFIG.BOUNCE_SPEED,
+		CONFIG.BOUNCE_UP,
+		flat.Z * CONFIG.BOUNCE_SPEED
+	)
 
-	-- Wait one physics step so the state change settles before we override velocity
-	RunService.Heartbeat:Wait()
+	-- Temporary full-3D BV holds the bounce velocity against humanoid corrections
+	local bounceBV = Instance.new("BodyVelocity")
+	bounceBV.Name     = "BounceBV"
+	bounceBV.Velocity = bounceVelocity
+	bounceBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)  -- Y included — prevents ground clamp
+	bounceBV.P        = 1e5
+	bounceBV.Parent   = State.hrp
 
-	if State.hrp then
-		State.hrp.AssemblyLinearVelocity = Vector3.new(
-			flat.X * CONFIG.BOUNCE_SPEED,
-			CONFIG.BOUNCE_UP,
-			flat.Z * CONFIG.BOUNCE_SPEED
-		)
-	end
+	-- Also write directly for the instant impulse
+	State.hrp.AssemblyLinearVelocity = bounceVelocity
+
+	-- Hold for 3 physics steps (enough to escape the ground), then release
+	task.spawn(function()
+		RunService.Stepped:Wait()
+		RunService.Stepped:Wait()
+		RunService.Stepped:Wait()
+		if bounceBV and bounceBV.Parent then
+			bounceBV:Destroy()
+		end
+	end)
 end
 
 -- ── Stop roll ─────────────────────────────────────────────────────────────────
@@ -581,7 +610,7 @@ local function stopRoll(endType)
 	State.isRolling     = false
 	State.chargePercent = 0
 
-	stopKnockbackLoop() -- safe flag-based stop
+	stopKnockbackLoop()
 
 	if State.rollUpdateConnection then
 		State.rollUpdateConnection:Disconnect()
@@ -604,17 +633,14 @@ local function stopRoll(endType)
 	end
 
 	if endType == "complete" then
-		-- Natural duration end: slowdown then tired freeze
 		destroyBodyVelocity()
 		applyTiredState()
 
 	elseif endType == "collision" then
-		-- Killer hit: bounceAwayFrom already destroyed BV before calling us
-		-- Just apply the tired state on top of the bounce
+		-- bounceAwayFrom already destroyed the spindash BV; tired state goes on top of bounce
 		applyTiredState()
 
 	elseif endType == "cancel" then
-		-- Manual cancel: endlag (brief speed ramp-down), NOT tired
 		destroyBodyVelocity()
 		applyEndlag()
 
@@ -683,7 +709,7 @@ local function startRoll()
 		State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
 
-	-- Knockback on from the first frame of rolling
+	-- Knockback active from the first frame of rolling
 	startKnockbackLoop()
 
 	-- Button text
@@ -705,8 +731,8 @@ local function startRoll()
 					local killerHRP = v.HumanoidRootPart
 					local distance  = (killerHRP.Position - State.hrp.Position).Magnitude
 					if distance < 6 then
-						bounceAwayFrom(killerHRP) -- destroys BV and applies bounce velocity
-						stopRoll("collision")     -- tired state, no BV destroy needed again
+						bounceAwayFrom(killerHRP)
+						stopRoll("collision")
 						startCooldown("complete")
 						break
 					end
