@@ -474,6 +474,9 @@ local function stopRoll(endType)
 	State.isRolling     = false
 	State.chargePercent = 0
 
+	stopKnockbackLoop()
+	destroyBodyVelocity() 
+
 	if State.rollUpdateConnection then
 		State.rollUpdateConnection:Disconnect()
 		State.rollUpdateConnection = nil
@@ -508,6 +511,8 @@ local function stopRoll(endType)
 	end
 
 	removeHighlight()
+	stopKnockbackLoop()
+	destroyBodyVelocity() 
 	cam.FieldOfView = State.defaultFov
 	updateButtonText()
 end
