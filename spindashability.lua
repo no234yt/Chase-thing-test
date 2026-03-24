@@ -16,39 +16,39 @@ local CONFIG = {
 
 	MIN_BOOST_POWER = 55,
 	MAX_BOOST_POWER = 100,
-	BOOST_ACCEL = 6,
-	BOOST_DECAY = 0.17,
-	MIN_SPEED = 47,
-	JUMP_BOOST = 30,
+	BOOST_ACCEL     = 6,
+	BOOST_DECAY     = 0.17,
+	MIN_SPEED       = 47,
+	JUMP_BOOST      = 30,
 
 	BASE_DURATION = 5,
-	MAX_DURATION = 7,
+	MAX_DURATION  = 7,
 
-	ENDLAG_DURATION = 0.4,
+	ENDLAG_DURATION        = 0.4,
 	ENDLAG_HIP_RETURN_TIME = 0.3,
 
 	FOV_CHARGE = 10,
-	FOV_BOOST = 5,
+	FOV_BOOST  = 5,
 
-	FLICKER_MIN_TRANSPARENCY = 0.35,
+	FLICKER_MIN_TRANSPARENCY  = 0.35,
 	FLICKER_SNAP_TRANSPARENCY = 0.5,
-	FLICKER_MAX_TRANSPARENCY = 1.0,
-	FLICKER_FADE_TIME = 0.15,
+	FLICKER_MAX_TRANSPARENCY  = 1.0,
+	FLICKER_FADE_TIME         = 0.15,
 
 	FLICKER_BASE_PITCH = 0.8,
-	FLICKER_MAX_PITCH = 1.2,
+	FLICKER_MAX_PITCH  = 1.2,
 
 	KEYBIND = Enum.KeyCode.V,
 
-	COOLDOWN_COMPLETE = 45,
-	COOLDOWN_CANCEL = 25,
+	COOLDOWN_COMPLETE    = 45,
+	COOLDOWN_CANCEL      = 25,
 	COOLDOWN_INSUFFICIENT = 10,
 
-	JUMP_HEIGHT = 7.2,
+	JUMP_HEIGHT  = 7.2,
 	JUMP_COOLDOWN = 1.5,
 
-	KNOCKBACK_MULTIPLIER = 5000,
-	KNOCKBACK_UP         = 8000,
+	KNOCKBACK_MULTIPLIER = 250,
+	KNOCKBACK_UP         = 6000,
 	KNOCKBACK_MOVE       = 0.1,
 
 	SPINDASH_SOUND = "https://github.com/no234yt/Chase-thing-test/raw/1ce62c4d812569e2355f209a7da46a7e9c284b51/sonic-spindash.mp3",
@@ -94,9 +94,10 @@ local State = {
 	flickerCoroutine     = nil,
 	cooldownCoroutine    = nil,
 	rollUpdateConnection = nil,
+	knockbackThread      = nil,
 
-	-- knockback thread handle
-	knockbackThread = nil,
+	-- BodyVelocity used for roll movement (avoids fighting with fling spikes)
+	bodyVelocity = nil,
 
 	jumpBtn         = nil,
 	jumpConnections = {},
@@ -110,8 +111,8 @@ local function lerp(a, b, t)
 end
 
 local function getDirection()
-	local lookVector = cam.CFrame.LookVector
-	return Vector3.new(lookVector.X, 0, lookVector.Z).Unit
+	local lv = cam.CFrame.LookVector
+	return Vector3.new(lv.X, 0, lv.Z).Unit
 end
 
 local function ensureFile(filename, url)
@@ -127,6 +128,34 @@ end
 
 local function calculateDuration(chargePercent)
 	return lerp(CONFIG.BASE_DURATION, CONFIG.MAX_DURATION, chargePercent)
+end
+
+-- ── BodyVelocity management ───────────────────────────────────────────────────
+-- We use BodyVelocity instead of raw AssemblyLinearVelocity so that:
+--   • Movement is a continuous constraint — it re-applies every physics step
+--   • The fling spike can temporarily override .Velocity without being
+--     permanently "won" by the Heartbeat overwrite that happened before
+
+local function createBodyVelocity()
+	if State.bodyVelocity then
+		State.bodyVelocity:Destroy()
+		State.bodyVelocity = nil
+	end
+	if not State.hrp then return end
+
+	local bv = Instance.new("BodyVelocity")
+	bv.Name      = "SpindashBV"
+	bv.MaxForce  = Vector3.new(1e5, 0, 1e5) -- horizontal only; gravity/jump still work
+	bv.Velocity  = Vector3.new(0, 0, 0)
+	bv.Parent    = State.hrp
+	State.bodyVelocity = bv
+end
+
+local function destroyBodyVelocity()
+	if State.bodyVelocity then
+		State.bodyVelocity:Destroy()
+		State.bodyVelocity = nil
+	end
 end
 
 -- ── Jump button ───────────────────────────────────────────────────────────────
@@ -153,15 +182,15 @@ local function makeBackupButton()
 	if not mobile then
 		mobile = Instance.new("Frame")
 		mobile.Name = "Mobile"
-		mobile.Size = UDim2.new(1, 0, 1, 0)
+		mobile.Size = UDim2.new(1,0,1,0)
 		mobile.BackgroundTransparency = 1
 		mobile.Parent = main
 	end
 	local btn = Instance.new("ImageButton")
 	btn.Name = "JumpBtn"
-	btn.Size = UDim2.new(0, 70, 0, 70)
-	btn.Position = UDim2.new(1, -90, 1, -90)
-	btn.AnchorPoint = Vector2.new(1, 1)
+	btn.Size = UDim2.new(0,70,0,70)
+	btn.Position = UDim2.new(1,-90,1,-90)
+	btn.AnchorPoint = Vector2.new(1,1)
 	btn.BackgroundTransparency = 1
 	btn.Image = ""
 	btn.AutoButtonColor = true
@@ -233,10 +262,10 @@ function startCooldown(cooldownType)
 	local cooldownOverlay = State.abilityButton:FindFirstChild("Cooldown")
 
 	local cooldownDuration
-	if     cooldownType == "complete"     then cooldownDuration = CONFIG.COOLDOWN_COMPLETE
-	elseif cooldownType == "cancel"       then cooldownDuration = CONFIG.COOLDOWN_CANCEL
-	elseif cooldownType == "insufficient" then cooldownDuration = CONFIG.COOLDOWN_INSUFFICIENT
-	else                                       cooldownDuration = CONFIG.COOLDOWN_COMPLETE
+	if     cooldownType == "complete"      then cooldownDuration = CONFIG.COOLDOWN_COMPLETE
+	elseif cooldownType == "cancel"        then cooldownDuration = CONFIG.COOLDOWN_CANCEL
+	elseif cooldownType == "insufficient"  then cooldownDuration = CONFIG.COOLDOWN_INSUFFICIENT
+	else                                        cooldownDuration = CONFIG.COOLDOWN_COMPLETE
 	end
 
 	if cooldownText    then cooldownText.Visible    = true end
@@ -272,7 +301,7 @@ local function createHighlight()
 	State.highlight = Instance.new("Highlight")
 	State.highlight.Parent              = State.character
 	State.highlight.FillColor           = Color3.fromRGB(255, 100, 100)
-	State.highlight.OutlineColor        = Color3.new(1, 1, 1)
+	State.highlight.OutlineColor        = Color3.new(1,1,1)
 	State.highlight.FillTransparency    = 0.5
 	State.highlight.OutlineTransparency = 0
 end
@@ -390,15 +419,16 @@ local function applyEndlag()
 	end)
 end
 
--- ── Knockback (fling-style on local HRP) ─────────────────────────────────────
+-- ── Knockback loop ────────────────────────────────────────────────────────────
 --
---  Works the same way as the fling example you provided:
---  rapidly spike OUR OWN velocity so Roblox's physics engine
---  collision-resolves nearby players/parts away from us.
---  Runs permanently every Heartbeat for the entire roll duration.
+--  Fling-style: spike OUR OWN velocity for one physics sub-step so Roblox's
+--  collision resolver throws nearby players/parts away, then restore.
+--  Because movement is now done via BodyVelocity (a persistent constraint),
+--  it automatically re-asserts the roll velocity next physics step —
+--  the spike no longer permanently breaks our movement.
 --
+
 local function startKnockbackLoop()
-	-- Cancel any existing thread first
 	if State.knockbackThread then
 		task.cancel(State.knockbackThread)
 		State.knockbackThread = nil
@@ -410,21 +440,20 @@ local function startKnockbackLoop()
 		while State.isRolling do
 			local hrp = State.hrp
 			if hrp then
-				-- Step 1: capture real roll velocity
 				local vel = hrp.AssemblyLinearVelocity
 
-				-- Step 2: spike — this is what physically collides into nearby players
+				-- Spike: our character physically slams into nearby players
 				hrp.Velocity = vel * CONFIG.KNOCKBACK_MULTIPLIER
 					+ Vector3.new(0, CONFIG.KNOCKBACK_UP, 0)
 
 				RunService.RenderStepped:Wait()
 
-				-- Step 3: restore so our own movement isn't broken
+				-- Restore our velocity — BodyVelocity will take over again next step
 				hrp.Velocity = vel
 
 				RunService.Stepped:Wait()
 
-				-- Step 4: small Y oscillation (same pattern as fling example)
+				-- Y oscillation keeps the effect continuous (same pattern as fling example)
 				hrp.Velocity = vel + Vector3.new(0, movel, 0)
 				movel = -movel
 			end
@@ -450,8 +479,8 @@ local function stopRoll(endType)
 	State.isRolling     = false
 	State.chargePercent = 0
 
-	-- Stop knockback immediately when roll ends
 	stopKnockbackLoop()
+	destroyBodyVelocity() -- remove movement constraint before endlag takes over
 
 	if State.rollUpdateConnection then
 		State.rollUpdateConnection:Disconnect()
@@ -514,6 +543,9 @@ local function startRoll()
 	State.speed           = boostPower
 	State.targetSpeed     = boostPower
 
+	-- Create the BodyVelocity constraint that will drive movement
+	createBodyVelocity()
+
 	State.rollUpdateConnection = RunService.RenderStepped:Connect(function()
 		if State.isRolling then
 			showJumpButton()
@@ -539,7 +571,7 @@ local function startRoll()
 		State.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
 	end
 
-	-- Start permanent knockback for the whole roll
+	-- Start knockback permanently for entire roll
 	startKnockbackLoop()
 
 	-- Button text updater
@@ -710,8 +742,8 @@ local function setupCharacter()
 	State.hrp       = State.character:WaitForChild("HumanoidRootPart")
 
 	local anim = Instance.new("Animation")
-	anim.AnimationId      = CONFIG.ANIM_ID
-	State.animTrack       = State.humanoid:LoadAnimation(anim)
+	anim.AnimationId       = CONFIG.ANIM_ID
+	State.animTrack        = State.humanoid:LoadAnimation(anim)
 	State.animTrack.Looped = true
 
 	setupSounds()
@@ -733,7 +765,14 @@ local function setupCharacter()
 	stopRoll("cancel")
 end
 
--- ── Heartbeat (movement) ──────────────────────────────────────────────────────
+-- ── Heartbeat ─────────────────────────────────────────────────────────────────
+--
+--  Movement is now driven by updating BodyVelocity.Velocity each frame
+--  instead of setting AssemblyLinearVelocity directly.
+--  This means the fling spike (which briefly overrides .Velocity) is
+--  automatically corrected by BodyVelocity the next physics step,
+--  so our movement is never permanently broken by the knockback.
+--
 
 RunService.Heartbeat:Connect(function(dt)
 	if not State.humanoid or not State.hrp then return end
@@ -749,9 +788,16 @@ RunService.Heartbeat:Connect(function(dt)
 		State.speed = lerp(State.speed, State.targetSpeed,
 			math.clamp(dt * CONFIG.BOOST_ACCEL, 0, 1))
 
-		local velocity = getDirection() * State.speed
-		State.hrp.AssemblyLinearVelocity =
-			Vector3.new(velocity.X, State.hrp.AssemblyLinearVelocity.Y, velocity.Z)
+		-- Update BodyVelocity (not AssemblyLinearVelocity) — this is the key change.
+		-- BodyVelocity reasserts itself every physics step so fling spikes can't break it.
+		if State.bodyVelocity then
+			local dir = getDirection()
+			State.bodyVelocity.Velocity = Vector3.new(
+				dir.X * State.speed,
+				0,
+				dir.Z * State.speed
+			)
+		end
 
 		if State.animTrack then
 			State.animTrack:AdjustSpeed(math.clamp(State.speed / 20, 1, 3))
